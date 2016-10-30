@@ -1,0 +1,19 @@
+{
+  "name": "marinetraffic-reporter",
+  "version": "0.0.1",
+  "description": "Signal K Node Server plugin to report your position to Marine Traffic http://www.marinetraffic.com/",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "signalk-node-server-plugin"
+  ],
+  "author": "teppo.kurki@iki.fi",
+  "license": "ISC",
+  "dependencies": {
+    "baconjs": "^0.7.88",
+    "debug": "^2.2.0",
+    "ggencoder": "^0.1.10"
+  }
+}
