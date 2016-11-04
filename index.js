@@ -26,20 +26,19 @@ module.exports = function(app) {
   var unsubscribe = undefined
 
   plugin.start = function(props) {
-    return false
-    debug("starting")
+    debug("starting with " + props.ipaddress + ":" + props.port)
     var mmsi = app.config.settings.vessel.mmsi
 
     try {
       udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog) {
         return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog)
-      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue'].map(app.streamBundle.getStream, streamBundle)).changes().debounceImmediate(60000).onValue(msg => {
+      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue'].map(app.streambundle.getOwnStream, app.streambundle)).changes().debounceImmediate(60000).onValue(msg => {
         sendPositionReportMsg(msg, props.ipaddress, props.port)
       })
     } catch (e) {
       plugin.started = false
-      return e
+      console.log(e)
     }
     debug("started")
   };
@@ -57,7 +56,6 @@ module.exports = function(app) {
   plugin.description = "Plugin that reports self's position periodically to Marine Traffic via UDP ASI messages"
 
   plugin.schema = {
-    title: "MarineTraffic reporter",
     type: "object",
     required: [
       "ipaddress", "port"
@@ -77,18 +75,19 @@ module.exports = function(app) {
   }
 
   return plugin;
-}
 
-function sendPositionReportMsg(msg, ip, port) {
-  debug(ip + ':' + port + ' ' + msg)
-  if (udpSocket) {
-    udpSocket.send(msg.nmea, 0, msg.nmea.length, port, ip, err => {
-      if (err) {
-        console.log('Failed to send position report.', err)
-      }
-    })
+  function sendPositionReportMsg(msg, ip, port) {
+    debug(ip + ':' + port + ' ' + JSON.stringify(msg.nmea))
+    if (udpSocket) {
+      udpSocket.send(msg.nmea, 0, msg.nmea.length, port, ip, err => {
+        if (err) {
+          console.log('Failed to send position report.', err)
+        }
+      })
+    }
   }
 }
+
 
 function createPositionReportMessage(mmsi, lat, lon, sog, cog) {
   return new AisEncode({
