@@ -31,9 +31,10 @@ module.exports = function(app) {
 
     try {
       udpSocket = require('dgram').createSocket('udp4')
-      unsubscribe = Bacon.combineWith(function(position, sog, cog) {
-        return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog)
-      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate(props.updaterate*1000).onValue(msg => {
+      unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
+        return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
+      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate(props.updaterate*1000).onValue(msg => {
+
         sendPositionReportMsg(msg, props.ipaddress, props.port)
       })
     } catch (e) {
@@ -94,7 +95,7 @@ module.exports = function(app) {
 }
 
 
-function createPositionReportMessage(mmsi, lat, lon, sog, cog) {
+function createPositionReportMessage(mmsi, lat, lon, sog, cog, head) {
   return new AisEncode({
     aistype: 18, // class B position report
     repeat: 0,
@@ -103,7 +104,8 @@ function createPositionReportMessage(mmsi, lat, lon, sog, cog) {
     accuracy: 0, // 0 = regular GPS, 1 = DGPS
     lon: lon,
     lat: lat,
-    cog: cog
+    cog: radsToDeg(cog),
+    hdg: radsToDeg(head)
   })
 }
 
