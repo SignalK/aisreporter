@@ -33,7 +33,7 @@ module.exports = function(app) {
       udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
         return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
-      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate(props.updaterate*1000).onValue(msg => {
+      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate((props.updaterate || 60)*1000).onValue(msg => {
 
         sendPositionReportMsg(msg, props.ipaddress, props.port)
       })
@@ -75,7 +75,7 @@ module.exports = function(app) {
       updaterate: {
         type: "number",
         title: "Update Rate (s)",
-        defaut: 60
+        default: 60
       }
     }
   }
