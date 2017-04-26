@@ -15,6 +15,6 @@
     "baconjs": "^0.7.88",
     "debug": "^2.2.0",
     "lodash": "^4.17.4",
-    "ggencoder": "^0.1.10"
+    "ggencoder": "^0.1.18"
   }
 }
