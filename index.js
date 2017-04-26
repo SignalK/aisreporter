@@ -37,7 +37,7 @@ module.exports = function(app) {
     }
     
     try {
-      udpSocket = require('dgram').createSocket('udp4')
+      //udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
         return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
       }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate((props.updaterate || 60)*1000).onValue(msg => {
@@ -45,11 +45,24 @@ module.exports = function(app) {
         sendReportMsg(msg, props.ipaddress, props.port)
       })
 
-      timeout = setInterval(function() {
-        info = getStaticInfo()
-        sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
-        sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
-      }, (props.staticupdaterate || 360) * 1000)
+      var checkForStatic = function()
+      {
+        timeout = undefined
+        var info = getStaticInfo()
+        if ( Object.keys(info).length )
+        {
+          sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
+          sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
+          timeout = setTimeout(checkForStatic, (props.staticupdaterate || 360) * 1000)
+        }
+        else
+        {
+          timeout = setTimeout(checkForStatic, 60000)
+        }
+      }
+
+      checkForStatic()
+      
     } catch (e) {
       plugin.started = false
       console.log(e)
