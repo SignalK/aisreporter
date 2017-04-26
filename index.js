@@ -52,7 +52,7 @@ module.exports = function(app) {
           info = getStaticInfo()
           sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
           sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
-        }, (props.staticupdaterate || 3600) * 1000)
+        }, (props.staticupdaterate || 360) * 1000)
       }
     } catch (e) {
       plugin.started = false
@@ -101,7 +101,7 @@ module.exports = function(app) {
       staticupdaterate: {
         type: "number",
         title: "Static Update Rate (s)",
-        default: 3600
+        default: 360
       }
     }
   }
