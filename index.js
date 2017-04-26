@@ -48,10 +48,8 @@ module.exports = function(app) {
       var static = getStaticInfo()
       if ( Object.keys(static).length )
       {
-        debug("setTimeout")
         timeout = setInterval(function() {
           info = getStaticInfo()
-          debug("info: " + util.inspect(info, {showHidden: false, depth: 6}))
           sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
           sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
         }, (props.staticupdaterate || 3600) * 1000)
@@ -69,7 +67,7 @@ module.exports = function(app) {
       unsubscribe()
     }
     if ( timeout ) {
-      timeout.clearInterval()
+      clearInterval(timeout)
       timeout = undefined
     }
     debug("stopped")
@@ -153,7 +151,6 @@ module.exports = function(app) {
         callsign: info.callsign
       }
       putDimensions(enc_msg, info.length, info.beam, info.fromBow, info.fromCenter);
-      debug("msg: " + util.inspect(enc_msg, {showHidden: false, depth: 6}))
       sendReportMsg(new AisEncode(enc_msg), ip, port)
     }
   }
@@ -168,10 +165,9 @@ module.exports = function(app) {
   function getStaticInfo()
   {
     var info = {}
-    //debug("self: " + util.inspect(app.signalk.self, {showHidden: false, depth: 6}))
     info.name = app.config.settings.vessel.name
     setKey(info, 'length', 'design.length.overall')
-    setKey(info, 'beam', 'design.beam')
+    setKey(info, 'beam', 'design.beam.value')
     setKey(info, 'callsign', 'communication.callsignVhf')
     setKey(info, 'shipType', 'design.aisShipType')
     setKey(info, 'fromBow', 'sensors.gps.fromBow.value')
@@ -205,8 +201,8 @@ function mpsToKn(mps) {
 
 function putDimensions(enc_msg, length, beam, fromBow, fromCenter)
 {
-  enc_msg.dimA = fromBow
-  enc_msg.dimB = length - fromBow
-  enc_msg.dimC =  (beam/2) + fromCenter
-  enc_msg.dimD = (beam/2) - fromCenter
+  enc_msg.dimA = fromBow.toFixed(0)
+  enc_msg.dimB = (length - fromBow).toFixed(0)
+  enc_msg.dimC =  ((beam/2) + fromCenter).toFixed(0)
+  enc_msg.dimD = ((beam/2) - fromCenter).toFixed(0)
 }
