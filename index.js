@@ -14,29 +14,49 @@
  */
 
 const debug = require('debug')('marinetrafficreporter')
-
 const Bacon = require('baconjs');
-
 const AisEncode = require("ggencoder").AisEncode
 const dgram = require('dgram')
+const _ = require('lodash')
+const util = require('util')
 
 module.exports = function(app) {
   var udpSocket
   var plugin = {}
   var unsubscribe = undefined
+  var timeout = undefined
 
   plugin.start = function(props) {
     debug("starting with " + props.ipaddress + ":" + props.port)
     var mmsi = app.config.settings.vessel.mmsi
 
+    if ( !mmsi )
+    {
+      console.log("marinetrafficreporter: mmsi missing in settings");
+      return
+    }
+    
     try {
       udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
         return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
       }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate((props.updaterate || 60)*1000).onValue(msg => {
 
-        sendPositionReportMsg(msg, props.ipaddress, props.port)
+        sendReportMsg(msg, props.ipaddress, props.port)
       })
+
+      var sendStaticReport = function() {
+        var info = getStaticInfo()
+        if ( Object.keys(info).length )
+        {
+          sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
+          sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
+        }
+      }
+
+      sendStaticReport()
+      setInterval(sendStaticReport, (props.staticupdaterate || 360) * 1000)
+
     } catch (e) {
       plugin.started = false
       console.log(e)
@@ -48,6 +68,10 @@ module.exports = function(app) {
     debug("stopping")
     if (unsubscribe) {
       unsubscribe()
+    }
+    if ( timeout ) {
+      clearInterval(timeout)
+      timeout = undefined
     }
     debug("stopped")
   };
@@ -70,19 +94,24 @@ module.exports = function(app) {
       port: {
         type: "number",
         title: "Port",
-        default: "12345"
+        default: 12345
       },
       updaterate: {
         type: "number",
-        title: "Update Rate (s)",
+        title: "Position Update Rate (s)",
         default: 60
+      },
+      staticupdaterate: {
+        type: "number",
+        title: "Static Update Rate (s)",
+        default: 360
       }
     }
   }
 
   return plugin;
 
-  function sendPositionReportMsg(msg, ip, port) {
+  function sendReportMsg(msg, ip, port) {
     debug(ip + ':' + port + ' ' + JSON.stringify(msg.nmea))
     if (udpSocket) {
       udpSocket.send(msg.nmea, 0, msg.nmea.length, port, ip, err => {
@@ -91,6 +120,62 @@ module.exports = function(app) {
         }
       })
     }
+  }
+
+  function sendStaticPartZero(info, mmsi, ip, port)
+  {
+    if ( info.name !== undefined )
+    {
+      sendReportMsg(new AisEncode( {
+        aistype: 24, // class B static
+        repeat: 0,
+        part: 0,
+        mmsi: mmsi,
+        shipname: info.name
+      }), ip, port)
+    }
+  }
+
+  function sendStaticPartOne(info, mmsi, ip, port)
+  {
+    if ( info.shipType !== undefined
+         || (info.length !== undefined
+             && info.beam !== undefined
+             && info.fromCenter !== undefined
+             && info.fromBow !== undefined)
+         || info.callsign )
+    {
+      var enc_msg = {
+        aistype: 24, // class B static
+        repeat: 0,
+        part: 1,
+        mmsi: mmsi,
+        cargo: info.shipType,
+        callsign: info.callsign
+      }
+      putDimensions(enc_msg, info.length, info.beam, info.fromBow, info.fromCenter);
+      sendReportMsg(new AisEncode(enc_msg), ip, port)
+    }
+  }
+
+  function setKey(info, dest_key, source_key)
+  {
+    var val = _.get(app.signalk.self, source_key)
+    if ( val !== undefined )
+      info[dest_key] = val
+  }
+
+  function getStaticInfo()
+  {
+    var info = {}
+    info.name = app.config.settings.vessel.name
+    setKey(info, 'length', 'design.length.overall')
+    setKey(info, 'beam', 'design.beam.value')
+    setKey(info, 'callsign', 'communication.callsignVhf')
+    setKey(info, 'shipType', 'design.aisShipType')
+    setKey(info, 'fromBow', 'sensors.gps.fromBow.value')
+    setKey(info, 'fromCenter', 'sensors.gps.fromCenter.value')
+    return info
   }
 }
 
@@ -115,4 +200,12 @@ function radsToDeg(radians) {
 
 function mpsToKn(mps) {
   return 1.9438444924574 * mps
+}
+
+function putDimensions(enc_msg, length, beam, fromBow, fromCenter)
+{
+  enc_msg.dimA = fromBow.toFixed(0)
+  enc_msg.dimB = (length - fromBow).toFixed(0)
+  enc_msg.dimC =  ((beam/2) + fromCenter).toFixed(0)
+  enc_msg.dimD = ((beam/2) - fromCenter).toFixed(0)
 }
