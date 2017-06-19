@@ -125,7 +125,7 @@ module.exports = function(app) {
   function sendReportMsg(msg, ip, port) {
     debug(ip + ':' + port + ' ' + JSON.stringify(msg.nmea))
     if (udpSocket) {
-      udpSocket.send(msg.nmea, 0, msg.nmea.length, port, ip, err => {
+      udpSocket.send(msg.nmea + '\n', 0, msg.nmea.length+1, port, ip, err => {
         if (err) {
           console.log('Failed to send position report.', err)
         }
