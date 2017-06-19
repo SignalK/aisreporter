@@ -55,7 +55,7 @@ module.exports = function(app) {
       }
 
       sendStaticReport()
-      setInterval(sendStaticReport, (props.staticupdaterate || 360) * 1000)
+      timeout = setInterval(sendStaticReport, (props.staticupdaterate || 360) * 1000)
 
     } catch (e) {
       plugin.started = false
