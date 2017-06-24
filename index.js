@@ -42,15 +42,17 @@ module.exports = function(app) {
         return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
       }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate((props.updaterate || 60)*1000).onValue(msg => {
 
-        sendReportMsg(msg, props.ipaddress, props.port)
+        props.endpoints.forEach(endpoint => {
+          sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
+        })
       })
 
       var sendStaticReport = function() {
         var info = getStaticInfo()
         if ( Object.keys(info).length )
         {
-          sendStaticPartZero(info, mmsi, props.ipaddress, props.port)
-          sendStaticPartOne(info, mmsi, props.ipaddress, props.port)
+          sendStaticPartZero(info, mmsi, props.endpoints)
+          sendStaticPartOne(info, mmsi, props.endpoints)
         }
       }
 
@@ -78,23 +80,32 @@ module.exports = function(app) {
 
   plugin.id = "marinetrafficreporter"
   plugin.name = "Marine Traffic Reporter"
-  plugin.description = "Plugin that reports self's position periodically to Marine Traffic via UDP ASI messages"
+  plugin.description = "Plugin that reports self's position periodically to Marine Traffic and/or AISHub via UDP AIS messages"
 
   plugin.schema = {
     type: "object",
-    required: [
-      "ipaddress", "port"
-    ],
     properties: {
-      ipaddress: {
-        type: "string",
-        title: "UDP endpoint IP address",
-        default: "0.0.0.0"
-      },
-      port: {
-        type: "number",
-        title: "Port",
-        default: 12345
+      endpoints: {
+        type: "array",
+        title: "UDP endpoints to send updates",
+        items: {
+          type: "object",
+          required: [
+            "ipaddress", "port"
+          ],
+          properties: {
+            ipaddress: {
+              type: "string",
+              title: "UDP endpoint IP address",
+              default: "0.0.0.0"
+            },
+            port: {
+              type: "number",
+              title: "Port",
+              default: 12345
+            },
+          },
+        },
       },
       updaterate: {
         type: "number",
@@ -108,13 +119,13 @@ module.exports = function(app) {
       }
     }
   }
-
+  
   return plugin;
 
   function sendReportMsg(msg, ip, port) {
     debug(ip + ':' + port + ' ' + JSON.stringify(msg.nmea))
     if (udpSocket) {
-      udpSocket.send(msg.nmea, 0, msg.nmea.length, port, ip, err => {
+      udpSocket.send(msg.nmea + '\n', 0, msg.nmea.length+1, port, ip, err => {
         if (err) {
           console.log('Failed to send position report.', err)
         }
@@ -122,21 +133,24 @@ module.exports = function(app) {
     }
   }
 
-  function sendStaticPartZero(info, mmsi, ip, port)
+  function sendStaticPartZero(info, mmsi, endpoints)
   {
     if ( info.name !== undefined )
     {
-      sendReportMsg(new AisEncode( {
-        aistype: 24, // class B static
-        repeat: 0,
-        part: 0,
-        mmsi: mmsi,
-        shipname: info.name
-      }), ip, port)
+      var encoded = new AisEncode( {
+          aistype: 24, // class B static
+          repeat: 0,
+          part: 0,
+          mmsi: mmsi,
+          shipname: info.name
+        })
+      endpoints.forEach(endpoint => {
+        sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
+      })
     }
   }
 
-  function sendStaticPartOne(info, mmsi, ip, port)
+  function sendStaticPartOne(info, mmsi, endpoints)
   {
     if ( info.shipType !== undefined
          || (info.length !== undefined
@@ -154,7 +168,10 @@ module.exports = function(app) {
         callsign: info.callsign
       }
       putDimensions(enc_msg, info.length, info.beam, info.fromBow, info.fromCenter);
-      sendReportMsg(new AisEncode(enc_msg), ip, port)
+      var encoded = new AisEncode(enc_msg)
+      endpoints.forEach(endpoint => {
+        sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
+      })
     }
   }
 
