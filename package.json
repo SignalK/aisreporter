@@ -1,15 +1,17 @@
 {
-  "name": "marinetraffic-reporter",
+  "name": "@signalk/aisreporter",
   "version": "0.0.1",
-  "description": "Signal K Node Server plugin to report your position to Marine Traffic http://www.marinetraffic.com/",
+  "description": "Signal K Node Server plugin to report your position to Marine Traffic http://www.marinetraffic.com/ and similar aggregators",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "keywords": [
     "signalk-node-server-plugin"
   ],
-  "author": "teppo.kurki@iki.fi",
+  "author": "Teppo Kurki <teppo.kurki@iki.fi>",
+  "contributors": [
+    {
+      "name": "Scott Bender"
+    }
+  ],
   "license": "ISC",
   "dependencies": {
     "baconjs": "^0.7.88",
