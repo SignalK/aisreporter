@@ -79,7 +79,7 @@ module.exports = function(app) {
   };
 
   plugin.id = "marinetrafficreporter"
-  plugin.name = "Marine Traffic Reporter"
+  plugin.name = "Ais Reporter"
   plugin.description = "Plugin that reports self's position periodically to Marine Traffic and/or AISHub via UDP AIS messages"
 
   plugin.schema = {
