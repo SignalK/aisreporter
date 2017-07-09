@@ -39,10 +39,12 @@ module.exports = function(app) {
     try {
       udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
-          return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
+          return createPositionReportMessage(mmsi, position, sog, cog, head)
         },
         ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue']
-          .map(app.streambundle.getSelfStream, app.streambundle))
+          .map(app.streambundle.getSelfStream, app.streambundle)
+          .map(s => s.toProperty(undefined))
+      )
       .changes().debounceImmediate((props.updaterate || 60) * 1000).onValue(msg => {
         props.endpoints.forEach(endpoint => {
           sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
@@ -199,17 +201,17 @@ module.exports = function(app) {
 }
 
 
-function createPositionReportMessage(mmsi, lat, lon, sog, cog, head) {
+function createPositionReportMessage(mmsi, position, sog, cog, head) {
   return new AisEncode({
     aistype: 18, // class B position report
     repeat: 0,
     mmsi: mmsi,
-    sog: sog,
+    sog: sog !== undefined ? mpsToKn(sog) : undefined,
     accuracy: 0, // 0 = regular GPS, 1 = DGPS
-    lon: lon,
-    lat: lat,
-    cog: radsToDeg(cog),
-    hdg: radsToDeg(head)
+    lon: position !== undefined ? position.longitude : undefined,
+    lat: position !== undefined ? position.latitude : undefined,
+    cog: cog !== undefined ? radsToDeg(cog) : undefined,
+    hdg: head !== undefined ? radsToDeg(head) : undefined
   })
 }
 
