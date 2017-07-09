@@ -14,122 +14,126 @@
  */
 
 const debug = require('debug')('marinetrafficreporter')
-const Bacon = require('baconjs');
-const AisEncode = require("ggencoder").AisEncode
+const Bacon = require('baconjs')
+const AisEncode = require('ggencoder').AisEncode
 const dgram = require('dgram')
 const _ = require('lodash')
 const util = require('util')
 
-module.exports = function(app) {
+module.exports = function (app) {
   var udpSocket
   var plugin = {}
-  var unsubscribe = undefined
-  var timeout = undefined
+  var unsubscribe
+  var timeout
 
-  plugin.start = function(props) {
-    debug("starting with " + props.ipaddress + ":" + props.port)
+  plugin.start = function (props) {
+    debug('starting with ' + props.ipaddress + ':' + props.port)
     var mmsi = app.config.settings.vessel.mmsi
 
-    if ( !mmsi )
-    {
-      console.log("marinetrafficreporter: mmsi missing in settings");
+    if (!mmsi) {
+      console.log('marinetrafficreporter: mmsi missing in settings')
       return
     }
-    
+
     try {
       udpSocket = require('dgram').createSocket('udp4')
-      unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
-          return createPositionReportMessage(mmsi, position, sog, cog, head)
-        },
-        ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue']
-          .map(app.streambundle.getSelfStream, app.streambundle)
-          .map(s => s.toProperty(undefined))
-      )
-      .changes().debounceImmediate((props.updaterate || 60) * 1000).onValue(msg => {
-        props.endpoints.forEach(endpoint => {
-          sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
+      unsubscribe = Bacon.combineWith(function (position, sog, cog, head) {
+        return createPositionReportMessage(mmsi, position, sog, cog, head)
+      }, [
+        'navigation.position',
+        'navigation.speedOverGround',
+        'navigation.courseOverGroundTrue',
+        'navigation.headingTrue'
+      ]
+        .map(app.streambundle.getSelfStream, app.streambundle)
+        .map(s => s.toProperty(undefined)))
+        .changes()
+        .debounceImmediate((props.updaterate || 60) * 1000)
+        .onValue(msg => {
+          props.endpoints.forEach(endpoint => {
+            sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
+          })
         })
-      })
 
-      var sendStaticReport = function() {
+      var sendStaticReport = function () {
         var info = getStaticInfo()
-        if ( Object.keys(info).length )
-        {
+        if (Object.keys(info).length) {
           sendStaticPartZero(info, mmsi, props.endpoints)
           sendStaticPartOne(info, mmsi, props.endpoints)
         }
       }
 
       sendStaticReport()
-      timeout = setInterval(sendStaticReport, (props.staticupdaterate || 360) * 1000)
-
+      timeout = setInterval(
+        sendStaticReport,
+        (props.staticupdaterate || 360) * 1000
+      )
     } catch (e) {
       plugin.started = false
       console.log(e)
     }
-    debug("started")
-  };
+    debug('started')
+  }
 
-  plugin.stop = function() {
-    debug("stopping")
+  plugin.stop = function () {
+    debug('stopping')
     if (unsubscribe) {
       unsubscribe()
     }
-    if ( timeout ) {
+    if (timeout) {
       clearInterval(timeout)
       timeout = undefined
     }
-    debug("stopped")
-  };
+    debug('stopped')
+  }
 
-  plugin.id = "marinetrafficreporter"
-  plugin.name = "Ais Reporter"
-  plugin.description = "Plugin that reports self's position periodically to Marine Traffic and/or AISHub via UDP AIS messages"
+  plugin.id = 'marinetrafficreporter'
+  plugin.name = 'Ais Reporter'
+  plugin.description =
+    "Plugin that reports self's position periodically to Marine Traffic and/or AISHub via UDP AIS messages"
 
   plugin.schema = {
-    type: "object",
+    type: 'object',
     properties: {
       endpoints: {
-        type: "array",
-        title: "UDP endpoints to send updates",
+        type: 'array',
+        title: 'UDP endpoints to send updates',
         items: {
-          type: "object",
-          required: [
-            "ipaddress", "port"
-          ],
+          type: 'object',
+          required: ['ipaddress', 'port'],
           properties: {
             ipaddress: {
-              type: "string",
-              title: "UDP endpoint IP address",
-              default: "0.0.0.0"
+              type: 'string',
+              title: 'UDP endpoint IP address',
+              default: '0.0.0.0'
             },
             port: {
-              type: "number",
-              title: "Port",
+              type: 'number',
+              title: 'Port',
               default: 12345
-            },
-          },
-        },
+            }
+          }
+        }
       },
       updaterate: {
-        type: "number",
-        title: "Position Update Rate (s)",
+        type: 'number',
+        title: 'Position Update Rate (s)',
         default: 60
       },
       staticupdaterate: {
-        type: "number",
-        title: "Static Update Rate (s)",
+        type: 'number',
+        title: 'Static Update Rate (s)',
         default: 360
       }
     }
   }
-  
-  return plugin;
 
-  function sendReportMsg(msg, ip, port) {
+  return plugin
+
+  function sendReportMsg (msg, ip, port) {
     debug(ip + ':' + port + ' ' + JSON.stringify(msg.nmea))
     if (udpSocket) {
-      udpSocket.send(msg.nmea + '\n', 0, msg.nmea.length+1, port, ip, err => {
+      udpSocket.send(msg.nmea + '\n', 0, msg.nmea.length + 1, port, ip, err => {
         if (err) {
           console.log('Failed to send position report.', err)
         }
@@ -137,32 +141,30 @@ module.exports = function(app) {
     }
   }
 
-  function sendStaticPartZero(info, mmsi, endpoints)
-  {
-    if ( info.name !== undefined )
-    {
-      var encoded = new AisEncode( {
-          aistype: 24, // class B static
-          repeat: 0,
-          part: 0,
-          mmsi: mmsi,
-          shipname: info.name
-        })
+  function sendStaticPartZero (info, mmsi, endpoints) {
+    if (info.name !== undefined) {
+      var encoded = new AisEncode({
+        aistype: 24, // class B static
+        repeat: 0,
+        part: 0,
+        mmsi: mmsi,
+        shipname: info.name
+      })
       endpoints.forEach(endpoint => {
         sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
       })
     }
   }
 
-  function sendStaticPartOne(info, mmsi, endpoints)
-  {
-    if ( info.shipType !== undefined
-         || (info.length !== undefined
-             && info.beam !== undefined
-             && info.fromCenter !== undefined
-             && info.fromBow !== undefined)
-         || info.callsign )
-    {
+  function sendStaticPartOne (info, mmsi, endpoints) {
+    if (
+      info.shipType !== undefined ||
+      (info.length !== undefined &&
+        info.beam !== undefined &&
+        info.fromCenter !== undefined &&
+        info.fromBow !== undefined) ||
+      info.callsign
+    ) {
       var enc_msg = {
         aistype: 24, // class B static
         repeat: 0,
@@ -171,7 +173,13 @@ module.exports = function(app) {
         cargo: info.shipType,
         callsign: info.callsign
       }
-      putDimensions(enc_msg, info.length, info.beam, info.fromBow, info.fromCenter);
+      putDimensions(
+        enc_msg,
+        info.length,
+        info.beam,
+        info.fromBow,
+        info.fromCenter
+      )
       var encoded = new AisEncode(enc_msg)
       endpoints.forEach(endpoint => {
         sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
@@ -179,15 +187,12 @@ module.exports = function(app) {
     }
   }
 
-  function setKey(info, dest_key, source_key)
-  {
+  function setKey (info, dest_key, source_key) {
     var val = _.get(app.signalk.self, source_key)
-    if ( val !== undefined )
-      info[dest_key] = val
+    if (val !== undefined) info[dest_key] = val
   }
 
-  function getStaticInfo()
-  {
+  function getStaticInfo () {
     var info = {}
     info.name = app.config.settings.vessel.name
     setKey(info, 'length', 'design.length.overall')
@@ -200,8 +205,7 @@ module.exports = function(app) {
   }
 }
 
-
-function createPositionReportMessage(mmsi, position, sog, cog, head) {
+function createPositionReportMessage (mmsi, position, sog, cog, head) {
   return new AisEncode({
     aistype: 18, // class B position report
     repeat: 0,
@@ -215,18 +219,17 @@ function createPositionReportMessage(mmsi, position, sog, cog, head) {
   })
 }
 
-function radsToDeg(radians) {
+function radsToDeg (radians) {
   return radians * 180 / Math.PI
 }
 
-function mpsToKn(mps) {
+function mpsToKn (mps) {
   return 1.9438444924574 * mps
 }
 
-function putDimensions(enc_msg, length, beam, fromBow, fromCenter)
-{
+function putDimensions (enc_msg, length, beam, fromBow, fromCenter) {
   enc_msg.dimA = fromBow.toFixed(0)
   enc_msg.dimB = (length - fromBow).toFixed(0)
-  enc_msg.dimC =  ((beam/2) + fromCenter).toFixed(0)
-  enc_msg.dimD = ((beam/2) - fromCenter).toFixed(0)
+  enc_msg.dimC = (beam / 2 + fromCenter).toFixed(0)
+  enc_msg.dimD = (beam / 2 - fromCenter).toFixed(0)
 }
