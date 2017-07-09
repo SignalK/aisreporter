@@ -39,9 +39,11 @@ module.exports = function(app) {
     try {
       udpSocket = require('dgram').createSocket('udp4')
       unsubscribe = Bacon.combineWith(function(position, sog, cog, head) {
-        return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
-      }, ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue'].map(app.streambundle.getSelfStream, app.streambundle)).changes().debounceImmediate((props.updaterate || 60)*1000).onValue(msg => {
-
+          return createPositionReportMessage(mmsi, position.latitude, position.longitude, mpsToKn(sog), cog, head)
+        },
+        ['navigation.position', 'navigation.speedOverGround', 'navigation.courseOverGroundTrue', 'navigation.headingTrue']
+          .map(app.streambundle.getSelfStream, app.streambundle))
+      .changes().debounceImmediate((props.updaterate || 60) * 1000).onValue(msg => {
         props.endpoints.forEach(endpoint => {
           sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
         })
