@@ -13,7 +13,6 @@
  * limitations under the License.
  */
 
-const debug = require('debug')('marinetrafficreporter')
 const Bacon = require('baconjs')
 const AisEncode = require('ggencoder').AisEncode
 const dgram = require('dgram')
@@ -21,17 +20,23 @@ const _ = require('lodash')
 const util = require('util')
 
 module.exports = function (app) {
+  const error = app.error || (msg => {console.error(msg)})
+
   var udpSocket
   var plugin = {}
   var unsubscribe
   var timeout
 
   plugin.start = function (props) {
-    debug('starting with ' + props.ipaddress + ':' + props.port)
-    var mmsi = app.config.settings.vessel.mmsi
+    if (!app.getSelfPath) {
+      error("Please upgrade the server, aisreporter needs app.getSelfPath and will not start")
+      return
+    }
+    var mmsi = app.getSelfPath('mmsi')
+
 
     if (!mmsi) {
-      console.log('marinetrafficreporter: mmsi missing in settings')
+      error('aisreporter: mmsi missing in settings')
       return
     }
 
@@ -72,11 +77,9 @@ module.exports = function (app) {
       plugin.started = false
       console.log(e)
     }
-    debug('started')
   }
 
   plugin.stop = function () {
-    debug('stopping')
     if (unsubscribe) {
       unsubscribe()
     }
@@ -84,10 +87,9 @@ module.exports = function (app) {
       clearInterval(timeout)
       timeout = undefined
     }
-    debug('stopped')
   }
 
-  plugin.id = 'marinetrafficreporter'
+  plugin.id = 'aisreporter'
   plugin.name = 'Ais Reporter'
   plugin.description =
     "Plugin that reports self's position periodically to Marine Traffic and/or AISHub via UDP AIS messages"
@@ -135,7 +137,7 @@ module.exports = function (app) {
     if (udpSocket) {
       udpSocket.send(msg.nmea + '\n', 0, msg.nmea.length + 1, port, ip, err => {
         if (err) {
-          console.log('Failed to send position report.', err)
+          error('Failed to send position report.', err)
         }
       })
     }
