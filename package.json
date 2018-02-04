@@ -1,9 +1,11 @@
 {
   "name": "@signalk/aisreporter",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Signal K Node Server plugin to report your position to Marine Traffic http://www.marinetraffic.com/ and similar aggregators",
   "main": "index.js",
-  "keywords": ["signalk-node-server-plugin"],
+  "keywords": [
+    "signalk-node-server-plugin"
+  ],
   "author": "Teppo Kurki <teppo.kurki@iki.fi>",
   "repository": "https://github.com/SignalK/aisreporter",
   "scripts": {
