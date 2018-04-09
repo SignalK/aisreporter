@@ -21,6 +21,7 @@ const util = require('util')
 
 module.exports = function (app) {
   const error = app.error || (msg => {console.error(msg)})
+  const debug = app.debug || (msg => {console.log(msg)})
 
   var udpSocket
   var plugin = {}
