@@ -27,6 +27,7 @@ module.exports = function (app) {
   var plugin = {}
   var unsubscribe
   var timeout
+  let lastMessages = []
 
   plugin.start = function (props) {
     if (!app.getSelfPath) {
@@ -56,6 +57,7 @@ module.exports = function (app) {
         .changes()
         .debounceImmediate((props.updaterate || 60) * 1000)
         .onValue(msg => {
+          lastMessages[0] = new Date().toISOString() + ':' + msg
           props.endpoints.forEach(endpoint => {
             sendReportMsg(msg, endpoint.ipaddress, endpoint.port)
           })
@@ -88,6 +90,10 @@ module.exports = function (app) {
       clearInterval(timeout)
       timeout = undefined
     }
+  }
+
+  plugin.statusMessage = function() {
+    return lastMessages.toString()
   }
 
   plugin.id = 'aisreporter'
@@ -153,6 +159,7 @@ module.exports = function (app) {
         mmsi: mmsi,
         shipname: info.name
       })
+      lastMessages[1] = new Date().toISOString() + ':' + encoded.nmea
       endpoints.forEach(endpoint => {
         sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
       })
@@ -184,6 +191,7 @@ module.exports = function (app) {
         info.fromCenter
       )
       var encoded = new AisEncode(enc_msg)
+      lastMessages[2] = new Date().toISOString() + ':' + encoded.nmea
       endpoints.forEach(endpoint => {
         sendReportMsg(encoded, endpoint.ipaddress, endpoint.port)
       })
