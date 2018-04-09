@@ -205,7 +205,7 @@ module.exports = function (app) {
 
   function getStaticInfo () {
     var info = {}
-    info.name = app.config.settings.vessel.name
+    setKey(info, 'name', 'name')
     setKey(info, 'length', 'design.length.overall')
     setKey(info, 'beam', 'design.beam.value')
     setKey(info, 'callsign', 'communication.callsignVhf')
