@@ -199,7 +199,7 @@ module.exports = function (app) {
   }
 
   function setKey (info, dest_key, source_key) {
-    var val = _.get(app.signalk.self, source_key)
+    var val = app.getSelfPath(source_key)
     if (val !== undefined) info[dest_key] = val
   }
 
