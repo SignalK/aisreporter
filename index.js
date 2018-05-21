@@ -212,7 +212,6 @@ module.exports = function (app) {
     setKey(info, 'shipType', 'design.aisShipType.value.id')
     setKey(info, 'fromBow', 'sensors.gps.fromBow.value')
     setKey(info, 'fromCenter', 'sensors.gps.fromCenter.value')
-    console.log(JSON.stringify(info))
     return info
   }
 }
