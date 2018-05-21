@@ -209,7 +209,7 @@ module.exports = function (app) {
     setKey(info, 'length', 'design.length.overall')
     setKey(info, 'beam', 'design.beam.value')
     setKey(info, 'callsign', 'communication.callsignVhf')
-    setKey(info, 'shipType', 'design.aisShipType')
+    setKey(info, 'shipType', 'design.aisShipType.value.id')
     setKey(info, 'fromBow', 'sensors.gps.fromBow.value')
     setKey(info, 'fromCenter', 'sensors.gps.fromCenter.value')
     return info
