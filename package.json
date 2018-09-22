@@ -19,8 +19,8 @@
   "license": "ISC",
   "dependencies": {
     "baconjs": "^0.7.88",
-    "lodash": "^4.17.4",
-    "ggencoder": "^0.1.18"
+    "ggencoder": "^0.1.18",
+    "lodash": "^4.17.11"
   },
   "devDependencies": {
     "prettier-standard": "^6.0.0"
