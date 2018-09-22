@@ -9,7 +9,9 @@
   "author": "Teppo Kurki <teppo.kurki@iki.fi>",
   "repository": "https://github.com/SignalK/aisreporter",
   "scripts": {
-    "format": "prettier-standard 'index.js'"
+    "format": "prettier-standard 'src/*.js'",
+    "build": "tsc",
+    "prepare": "tsc"
   },
   "contributors": [
     {
@@ -23,6 +25,9 @@
     "lodash": "^4.17.11"
   },
   "devDependencies": {
-    "prettier-standard": "^8.0.1"
+    "@types/baconjs": "^0.7.33",
+    "@types/node": "^8.0.0",
+    "prettier-standard": "^8.0.1",
+    "typescript": "^3.0.3"
   }
 }
