@@ -23,6 +23,6 @@
     "lodash": "^4.17.11"
   },
   "devDependencies": {
-    "prettier-standard": "^6.0.0"
+    "prettier-standard": "^8.0.1"
   }
 }
