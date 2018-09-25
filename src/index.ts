@@ -67,7 +67,6 @@ export default function (app: any) {
 
         var sendStaticReport = function () {
           var info = getStaticInfo()
-          console.log(info)
           if (Object.keys(info).length) {
             sendStaticPartZero(info, mmsi, props.endpoints)
             sendStaticPartOne(info, mmsi, props.endpoints)
