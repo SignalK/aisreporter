@@ -1,10 +1,14 @@
 # aisreporter
-Signal K Node server plugin to report the vessel's AIS data to MarineTraffic and other similar aggregators.
+Signal K Node server plugin to report the vessel's AIS data to MarineTraffic, AISHub and other similar aggregators.
 
-The static info is retrieved from the Signal K full data model. You can use the server's defaults.json mechanism to set the values.
+This plugin generates raw NMEA messages using vessel's position, speed, heading, etc. It does not require an AIS receiver or transceiver. If you do have an AIS, it also doesn't send positions received from it. If you would like a plugin that relays AIS data, check [`ais-forwarder`](https://github.com/hkapanen/ais-forwarder) instead.
+
+The static info used in `aisreporter` is retrieved from the Signal K full data model. You can use the server's defaults.json mechanism to set the values.
 
 ![image](https://user-images.githubusercontent.com/1049678/30029804-6207916a-9193-11e7-99d1-fbca6a9c8627.png)
 
+## Creating Stations
+In order to use this plugin, you will need an IP address and a UDP port number, which requires you to create a station with MarineTraffic, AISHub or another aggregator. In order to create a station, visit [My Stations page on MarineTraffic](https://www.marinetraffic.com/en/users/my_account/stations/index) or [Join Us page on AISHub](https://www.aishub.net/join-us).
 
 ## Troubleshooting
 
