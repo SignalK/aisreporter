@@ -28,6 +28,8 @@ export default function (app: any) {
   let unsubscribe: () => void
   let timeout: any
   let lastMessages: [string, string, string] = ['', '', '']
+  let lastMsgNmea: any
+  let stationary: any
 
   const plugin: Plugin = {
 
@@ -62,8 +64,27 @@ export default function (app: any) {
             lastMessages[0] = new Date().toISOString() + ':' + msg.nmea
             props.endpoints.forEach((endpoint: Endpoint) => {
               sendReportMsg(msg.nmea, endpoint.ipaddress, endpoint.port)
+
+              lastMsgNmea = msg.nmea
+              if (stationary) {
+                clearInterval(stationary)
+                stationary = undefined
+              }
+              if (props.stationaryupdate) {
+                stationary = setInterval(
+                  sendStationaryReport,
+                  (props.stationaryupdaterate || 180) * 1000
+                )
+              }
             })
           })
+
+        var sendStationaryReport = function () {
+          lastMessages[0] = 'stationary ' + new Date().toISOString() + ':' + lastMsgNmea
+          props.endpoints.forEach((endpoint: Endpoint) =>  {
+              sendReportMsg(lastMsgNmea, endpoint.ipaddress, endpoint.port)
+          })
+        }
 
         var sendStaticReport = function () {
           var info = getStaticInfo()
@@ -91,6 +112,10 @@ export default function (app: any) {
       if (timeout) {
         clearInterval(timeout)
         timeout = undefined
+      }
+      if (stationary) {
+        clearInterval(stationary)
+        stationary = undefined
       }
     },
 
@@ -134,6 +159,16 @@ export default function (app: any) {
           type: 'number',
           title: 'Static Update Rate (s)',
           default: 360
+        },
+        stationaryupdaterate: {
+          type: 'number',
+          title: 'Stationary Update Rate (s)',
+          default: 180
+        },
+        stationaryupdate: {
+          type: 'boolean',
+          title: 'Send stationary position updates with last known position when position is not updated',
+          default: false
         }
       }
     }
@@ -273,4 +308,3 @@ function putDimensions(enc_msg: any, length: number | undefined = 0, beam: numbe
   enc_msg.dimC = (beam / 2 + fromCenter).toFixed(0)
   enc_msg.dimD = (beam / 2 - fromCenter).toFixed(0)
 }
-
