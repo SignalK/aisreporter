@@ -29,7 +29,7 @@ export default function (app: any) {
   let timeout: any
   let lastMessages: [string, string, string] = ['', '', '']
   let lastMsgNmea: any
-  let stationary: any
+  let lastPositonTimeout: any
 
   const plugin: Plugin = {
 
@@ -66,21 +66,21 @@ export default function (app: any) {
               sendReportMsg(msg.nmea, endpoint.ipaddress, endpoint.port)
 
               lastMsgNmea = msg.nmea
-              if (stationary) {
-                clearInterval(stationary)
-                stationary = undefined
+              if (lastPositonTimeout) {
+                clearInterval(lastPositonTimeout)
+                lastPositonTimeout = undefined
               }
-              if (props.stationaryupdate) {
-                stationary = setInterval(
-                  sendStationaryReport,
-                  (props.stationaryupdaterate || 180) * 1000
+              if (props.lastpositonupdate) {
+                lastPositonTimeout = setInterval(
+                  sendLastPositionReport,
+                  (props.lastpositonupdaterate || 180) * 1000
                 )
               }
             })
           })
 
-        var sendStationaryReport = function () {
-          lastMessages[0] = 'stationary ' + new Date().toISOString() + ':' + lastMsgNmea
+        var sendLastPositionReport = function () {
+          lastMessages[0] = 'last known ' + new Date().toISOString() + ':' + lastMsgNmea
           props.endpoints.forEach((endpoint: Endpoint) =>  {
               sendReportMsg(lastMsgNmea, endpoint.ipaddress, endpoint.port)
           })
@@ -113,9 +113,9 @@ export default function (app: any) {
         clearInterval(timeout)
         timeout = undefined
       }
-      if (stationary) {
-        clearInterval(stationary)
-        stationary = undefined
+      if (lastPositonTimeout) {
+        clearInterval(lastPositonTimeout)
+        lastPositonTimeout = undefined
       }
     },
 
@@ -160,14 +160,14 @@ export default function (app: any) {
           title: 'Static Update Rate (s)',
           default: 360
         },
-        stationaryupdaterate: {
+        lastpositonupdaterate: {
           type: 'number',
-          title: 'Stationary Update Rate (s)',
+          title: 'Last Known Position Update Rate (s)',
           default: 180
         },
-        stationaryupdate: {
+        lastpositonupdate: {
           type: 'boolean',
-          title: 'Send stationary position updates with last known position when position is not updated',
+          title: 'Keep sending last known position when position data is not updated',
           default: false
         }
       }
