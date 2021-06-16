@@ -7,7 +7,7 @@ The static info used in `aisreporter` is retrieved from the [Signal K data for s
 
 Optionally the plugin can keep on sending the last known position when position data is not updated, e.g when the GPS device is switched off while docking or for winter break.
 
-![image](https://user-images.githubusercontent.com/1049678/30029804-6207916a-9193-11e7-99d1-fbca6a9c8627.png)
+![image](https://user-images.githubusercontent.com/1049678/121819974-c9f05c00-cc98-11eb-943e-814889a81947.png)
 
 ## Creating Stations
 In order to use this plugin, you will need an IP address and a UDP port number, which requires you to create a station with MarineTraffic, AISHub or another aggregator. In order to create a station, visit [My Stations page on MarineTraffic](https://www.marinetraffic.com/en/users/my_account/stations/index) or [Join Us page on AISHub](https://www.aishub.net/join-us).

@@ -29,7 +29,7 @@ export default function (app: any) {
   let timeout: any
   let lastMessages: [string, string, string] = ['', '', '']
   let lastMsgNmea: any
-  let lastPositonTimeout: any
+  let lastPositionTimeout: any
 
   const plugin: Plugin = {
 
@@ -64,19 +64,18 @@ export default function (app: any) {
             lastMessages[0] = new Date().toISOString() + ':' + msg.nmea
             props.endpoints.forEach((endpoint: Endpoint) => {
               sendReportMsg(msg.nmea, endpoint.ipaddress, endpoint.port)
-
-              lastMsgNmea = msg.nmea
-              if (lastPositonTimeout) {
-                clearInterval(lastPositonTimeout)
-                lastPositonTimeout = undefined
-              }
-              if (props.lastpositonupdate) {
-                lastPositonTimeout = setInterval(
-                  sendLastPositionReport,
-                  (props.lastpositonupdaterate || 180) * 1000
-                )
-              }
             })
+            lastMsgNmea = msg.nmea
+            if (lastPositionTimeout) {
+              clearInterval(lastPositionTimeout)
+              lastPositionTimeout = undefined
+            }
+            if (props.lastpositonupdate) {
+              lastPositionTimeout = setInterval(
+                sendLastPositionReport,
+                (props.lastpositonupdaterate || 180) * 1000
+              )
+            }
           })
 
         var sendLastPositionReport = function () {
@@ -113,9 +112,9 @@ export default function (app: any) {
         clearInterval(timeout)
         timeout = undefined
       }
-      if (lastPositonTimeout) {
-        clearInterval(lastPositonTimeout)
-        lastPositonTimeout = undefined
+      if (lastPositionTimeout) {
+        clearInterval(lastPositionTimeout)
+        lastPositionTimeout = undefined
       }
     },
 
