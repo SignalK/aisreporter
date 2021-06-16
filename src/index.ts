@@ -28,6 +28,8 @@ export default function (app: any) {
   let unsubscribe: () => void
   let timeout: any
   let lastMessages: [string, string, string] = ['', '', '']
+  let lastMsgNmea: any
+  let lastPositionTimeout: any
 
   const plugin: Plugin = {
 
@@ -63,7 +65,25 @@ export default function (app: any) {
             props.endpoints.forEach((endpoint: Endpoint) => {
               sendReportMsg(msg.nmea, endpoint.ipaddress, endpoint.port)
             })
+            lastMsgNmea = msg.nmea
+            if (lastPositionTimeout) {
+              clearInterval(lastPositionTimeout)
+              lastPositionTimeout = undefined
+            }
+            if (props.lastpositonupdate) {
+              lastPositionTimeout = setInterval(
+                sendLastPositionReport,
+                (props.lastpositonupdaterate || 180) * 1000
+              )
+            }
           })
+
+        var sendLastPositionReport = function () {
+          lastMessages[0] = 'last known ' + new Date().toISOString() + ':' + lastMsgNmea
+          props.endpoints.forEach((endpoint: Endpoint) =>  {
+              sendReportMsg(lastMsgNmea, endpoint.ipaddress, endpoint.port)
+          })
+        }
 
         var sendStaticReport = function () {
           var info = getStaticInfo()
@@ -91,6 +111,10 @@ export default function (app: any) {
       if (timeout) {
         clearInterval(timeout)
         timeout = undefined
+      }
+      if (lastPositionTimeout) {
+        clearInterval(lastPositionTimeout)
+        lastPositionTimeout = undefined
       }
     },
 
@@ -134,6 +158,16 @@ export default function (app: any) {
           type: 'number',
           title: 'Static Update Rate (s)',
           default: 360
+        },
+        lastpositonupdaterate: {
+          type: 'number',
+          title: 'Last Known Position Update Rate (s)',
+          default: 180
+        },
+        lastpositonupdate: {
+          type: 'boolean',
+          title: 'Keep sending last known position when position data is not updated',
+          default: false
         }
       }
     }
@@ -273,4 +307,3 @@ function putDimensions(enc_msg: any, length: number | undefined = 0, beam: numbe
   enc_msg.dimC = (beam / 2 + fromCenter).toFixed(0)
   enc_msg.dimD = (beam / 2 - fromCenter).toFixed(0)
 }
-

@@ -5,7 +5,9 @@ This plugin generates raw NMEA messages using vessel's position, speed, heading,
 
 The static info used in `aisreporter` is retrieved from the [Signal K data for specific paths](https://github.com/SignalK/aisreporter/blob/a14562cd3f3f535f040368f59307bfa6c116ddb1/src/index.ts#L210-L216). The most important values like the MMSI number and the vessel name are available in the server's setting via the UI, for the rest you can use the server's defaults.json mechanism.
 
-![image](https://user-images.githubusercontent.com/1049678/30029804-6207916a-9193-11e7-99d1-fbca6a9c8627.png)
+Optionally the plugin can keep on sending the last known position when position data is not updated, e.g when the GPS device is switched off while docking or for winter break.
+
+![image](https://user-images.githubusercontent.com/1049678/121819974-c9f05c00-cc98-11eb-943e-814889a81947.png)
 
 ## Creating Stations
 In order to use this plugin, you will need an IP address and a UDP port number, which requires you to create a station with MarineTraffic, AISHub or another aggregator. In order to create a station, visit [My Stations page on MarineTraffic](https://www.marinetraffic.com/en/users/my_account/stations/index) or [Join Us page on AISHub](https://www.aishub.net/join-us).
