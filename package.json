@@ -27,7 +27,7 @@
   "devDependencies": {
     "@types/baconjs": "^0.7.33",
     "@types/node": "^8.0.0",
-    "prettier-standard": "^8.0.1",
+    "prettier-standard": "^16.4.1",
     "typescript": "^3.0.3"
   }
 }
