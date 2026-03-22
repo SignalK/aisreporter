@@ -14,7 +14,6 @@
  */
 
 import { combineWith } from 'baconjs'
-import { isUndefined } from 'util'
 import { AisEncode, AisEncodeOptions } from 'ggencoder'
 import * as dgram from 'dgram'
 const _ = require('lodash')
@@ -48,7 +47,7 @@ export default function (app: any) {
 
       try {
         udpSocket = dgram.createSocket('udp4')
-        unsubscribe = combineWith<any, any>(function (position: Position, sog: number, cog: number, head: number) {
+        unsubscribe = (combineWith as any)(function (position: any, sog: number, cog: number, head: number) {
           return createPositionReportMessage(mmsi, position, sog, cog, head)
         }, [
           'navigation.position',
@@ -236,7 +235,7 @@ export default function (app: any) {
 
   function setKey(info: StaticInfo, dest_key: string, source_key: string) {
     const val = app.getSelfPath(source_key)
-    if (!isUndefined(val)) info[dest_key] = val
+    if (val !== undefined) info[dest_key] = val
   }
 
   function getStaticInfo(): StaticInfo {
