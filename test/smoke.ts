@@ -22,8 +22,8 @@ describe('aisreporter plugin factory', () => {
       'endpoints',
       'updaterate',
       'staticupdaterate',
-      'lastpositonupdaterate',
-      'lastpositonupdate'
+      'lastpositionupdaterate',
+      'lastpositionupdate'
     )
   })
 

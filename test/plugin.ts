@@ -23,6 +23,7 @@ interface Harness {
   app: any
   buses: Record<string, Bacon.Bus<unknown>>
   selfPathValues: Record<string, unknown>
+  savedOptions: Array<Record<string, unknown>>
   received: Buffer[]
   port: number
   close: () => Promise<void>
@@ -46,6 +47,7 @@ async function createHarness(): Promise<Harness> {
 
   const buses: Record<string, Bacon.Bus<unknown>> = {}
   const selfPathValues: Record<string, unknown> = { mmsi: '123456789' }
+  const savedOptions: Array<Record<string, unknown>> = []
 
   const app = {
     streambundle: {
@@ -57,6 +59,15 @@ async function createHarness(): Promise<Harness> {
     getSelfPath(key: string) {
       return selfPathValues[key]
     },
+    // Stub for the server-side config writer used by the #32 migration.
+    // Tests can inspect savedOptions to verify the migration was persisted.
+    savePluginOptions(
+      opts: Record<string, unknown>,
+      cb?: (err?: Error) => void
+    ) {
+      savedOptions.push(opts)
+      if (cb) cb()
+    },
     error: () => undefined,
     debug: () => undefined
   }
@@ -65,6 +76,7 @@ async function createHarness(): Promise<Harness> {
     app,
     buses,
     selfPathValues,
+    savedOptions,
     received,
     port,
     close: () =>
@@ -95,18 +107,16 @@ async function pushPositionInputs(
     cog = 0.5,
     head = 0.7
   }: Partial<{
-    position: { latitude: number; longitude: number }
-    sog: number
-    cog: number
-    head: number
+    position: { latitude: number; longitude: number } | undefined
+    sog: number | undefined
+    cog: number | undefined
+    head: number | undefined
   }> = {},
   debounceWindowMs = 15
 ) {
   h.buses['navigation.speedOverGround']!.push(sog)
   h.buses['navigation.courseOverGroundTrue']!.push(cog)
   h.buses['navigation.headingTrue']!.push(head)
-  // Wait for the leading-edge debounce to settle so the next push opens
-  // a new window and carries all four values through.
   await wait(debounceWindowMs)
   h.buses['navigation.position']!.push(position)
 }
@@ -119,7 +129,7 @@ describe('aisreporter start/stop lifecycle', () => {
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
       updaterate: 0.01,
       staticupdaterate: 999,
-      lastpositonupdate: false
+      lastpositionupdate: false
     })
     await pushPositionInputs(h)
     await wait(40)
@@ -127,12 +137,15 @@ describe('aisreporter start/stop lifecycle', () => {
     await h.close()
 
     const payloads = h.received.map((b) => b.toString().trim())
-    // At least one type-18 position report (AIVDM with !AIVDM,1,1,,B,...)
     const posReport = payloads.find((p) => p.startsWith('!AIVDM'))
     expect(posReport, 'expected an AIVDM UDP frame').to.exist
   })
 
-  it('sends both static parts on startup when the app has the full design profile', async () => {
+  // #6 — static reports are now gated on seeing a dynamic reading first.
+  // Every static-test below pushes a position before asserting on the
+  // emitted frames.
+
+  it('sends both static parts on first dynamic when the app has the full design profile', async () => {
     const h = await createHarness()
     h.selfPathValues['name'] = 'Test Vessel'
     h.selfPathValues['design.length.value.overall'] = 12
@@ -145,18 +158,17 @@ describe('aisreporter start/stop lifecycle', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
-    // The first sendStaticReport call is synchronous; give the UDP a moment.
+    await pushPositionInputs(h)
     await wait(40)
     plugin.stop()
     await h.close()
 
     const payloads = h.received.map((b) => b.toString().trim())
-    // Static reports come as type-24 AIS messages (AIVDM too).
-    // We expect two: part 0 (shipname) + part 1 (dims/callsign).
-    expect(payloads.length).to.be.at.least(2)
+    // Position (type-18) + static part 0 + static part 1 = at least three.
+    expect(payloads.length).to.be.at.least(3)
     expect(payloads.every((p) => p.startsWith('!AIVDM'))).to.equal(true)
   })
 
@@ -166,33 +178,37 @@ describe('aisreporter start/stop lifecycle', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
     const payloads = h.received.map((b) => b.toString().trim())
-    expect(payloads.length).to.equal(1)
+    // Position + part 0. No part 1 because no shipType / no callsign / no
+    // full dims.
+    expect(payloads.length).to.equal(2)
   })
 
-  it('sends nothing static when neither name, callsign, nor dims are set', async () => {
+  it('sends no static when neither name, callsign, nor dims are set', async () => {
     const h = await createHarness()
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
-    expect(h.received.length).to.equal(0)
+    // Only the position frame — no static content to send.
+    expect(h.received.length).to.equal(1)
   })
 
-  // The remaining static-part-one branches: dims-only and callsign-only.
-  // Together with the shipType-branch test above, every arm of the `||`
-  // gate is exercised.
+  // Cover every arm of the sendStaticPartOne gate:
+  // shipType, dims-only, callsign-only.
 
   it('sends part 1 when only dims (no shipType, no callsign) are set', async () => {
     const h = await createHarness()
@@ -204,13 +220,15 @@ describe('aisreporter start/stop lifecycle', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
-    expect(h.received.length).to.equal(2)
+    // Position + static part 0 + static part 1.
+    expect(h.received.length).to.equal(3)
   })
 
   it('sends part 1 when only callsign (no shipType, no full dims) is set', async () => {
@@ -220,54 +238,55 @@ describe('aisreporter start/stop lifecycle', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
-    expect(h.received.length).to.equal(2)
+    // Position + static part 0 + static part 1.
+    expect(h.received.length).to.equal(3)
   })
 
-  it('static rebroadcast fires on staticupdaterate', async () => {
+  it('static rebroadcast fires on staticupdaterate after the first dynamic', async () => {
     const h = await createHarness()
     h.selfPathValues['name'] = 'Repeater'
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
-      staticupdaterate: 0.015
+      updaterate: 0.01,
+      staticupdaterate: 0.02
     })
-    await wait(60)
+    await pushPositionInputs(h)
+    await wait(80)
     plugin.stop()
     await h.close()
-    // Initial + at least one rebroadcast ≈ 2+ frames.
-    expect(h.received.length).to.be.at.least(2)
+    // Position + initial static part 0 (fires on first dynamic) + at
+    // least one interval rebroadcast of part 0 = 3+ frames.
+    expect(h.received.length).to.be.at.least(3)
   })
 
-  it('resends last known position on lastpositonupdate interval', async () => {
+  it('resends last known position on lastpositionupdate interval', async () => {
     const h = await createHarness()
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
       updaterate: 0.01,
       staticupdaterate: 999,
-      lastpositonupdate: true,
-      lastpositonupdaterate: 0.015
+      lastpositionupdate: true,
+      lastpositionupdaterate: 0.015
     })
     await pushPositionInputs(h)
     await wait(80)
     plugin.stop()
     await h.close()
-    // Original position + at least one "last known" resend.
     expect(h.received.length).to.be.at.least(2)
   })
 
   it('broadcasts to every configured endpoint', async () => {
     const h1 = await createHarness()
     const h2 = await createHarness()
-    // The second harness borrows the first's app so both receive from the
-    // same plugin instance; only the UDP endpoint list distinguishes them.
     const plugin = createPlugin(h1.app)
     plugin.start({
       endpoints: [
@@ -298,7 +317,6 @@ describe('aisreporter start/stop lifecycle', () => {
     plugin.stop()
     const afterFirstStop = h.received.length
 
-    // Second start(): fresh factory + new streams.
     const h2 = await createHarness()
     const plugin2 = createPlugin(h2.app)
     plugin2.start({
@@ -338,14 +356,6 @@ describe('aisreporter start/stop lifecycle', () => {
 })
 
 describe('aisreporter AIS field encoding', () => {
-  // These tests assert the exact NMEA output bytes against a reference
-  // frame constructed directly with ggencoder. Any drift in the
-  // field-mapping code (mpsToKn, radsToDeg, or the `!== undefined`
-  // guards that decide whether to pass a field through) flips the
-  // encoded bitstream and the comparison fails. This is what gets the
-  // Stryker score up — simple "a frame arrived" assertions pass through
-  // most mutations unnoticed.
-
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { AisEncode } = require('ggencoder')
   const MMSI = '123456789'
@@ -373,7 +383,7 @@ describe('aisreporter AIS field encoding', () => {
       aistype: 18,
       repeat: 0,
       mmsi: MMSI,
-      sog: 1.9438444924574, // 1 m/s converted to knots
+      sog: 1.9438444924574,
       accuracy: 0,
       lon: 20,
       lat: 10,
@@ -388,7 +398,7 @@ describe('aisreporter AIS field encoding', () => {
     ).to.include(expected)
   })
 
-  it('omits sog / cog / hdg / lat / lon when their source value is undefined', async () => {
+  it('still encodes position with sog / cog / hdg unset (only position is required)', async () => {
     const h = await createHarness()
     h.selfPathValues['mmsi'] = MMSI
     const plugin = createPlugin(h.app)
@@ -397,11 +407,10 @@ describe('aisreporter AIS field encoding', () => {
       updaterate: 0.01,
       staticupdaterate: 999
     })
-    h.buses['navigation.position']!.push(undefined)
-    h.buses['navigation.speedOverGround']!.push(undefined)
-    h.buses['navigation.courseOverGroundTrue']!.push(undefined)
-    h.buses['navigation.headingTrue']!.push(undefined)
-    await wait(40)
+    // Push position only — leave sog / cog / head at their .toProperty
+    // seed of undefined. Bypasses pushPositionInputs's numeric defaults.
+    h.buses['navigation.position']!.push({ latitude: 10, longitude: 20 })
+    await wait(30)
     plugin.stop()
     await h.close()
 
@@ -411,13 +420,17 @@ describe('aisreporter AIS field encoding', () => {
       mmsi: MMSI,
       sog: undefined,
       accuracy: 0,
-      lon: undefined,
-      lat: undefined,
+      lon: 20,
+      lat: 10,
       cog: undefined,
       hdg: undefined
     }).nmea
 
-    expect(h.received.map((b) => b.toString().trim())).to.include(expected)
+    const actual = h.received.map((b) => b.toString().trim())
+    expect(
+      actual,
+      `expected a frame equal to ${expected}, got ${JSON.stringify(actual)}`
+    ).to.include(expected)
   })
 
   it('static part 0 encodes shipname bit-for-bit', async () => {
@@ -427,9 +440,10 @@ describe('aisreporter AIS field encoding', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
@@ -459,15 +473,14 @@ describe('aisreporter AIS field encoding', () => {
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 999,
+      updaterate: 0.01,
       staticupdaterate: 999
     })
+    await pushPositionInputs(h)
     await wait(30)
     plugin.stop()
     await h.close()
 
-    // Mirror putDimensions(): dimA = fromBow, dimB = length-fromBow,
-    // dimC = beam/2 + fromCenter, dimD = beam/2 - fromCenter.
     const expected: string = new AisEncode({
       aistype: 24,
       repeat: 0,
@@ -485,8 +498,6 @@ describe('aisreporter AIS field encoding', () => {
   })
 
   it('different positions produce different NMEA frames (sensitivity)', async () => {
-    // Kill mutants like `lat: position !== undefined ? position.latitude : undefined`
-    // → `lat: undefined`: if latitude were dropped, both frames would match.
     async function frameFor(lat: number, lon: number): Promise<string> {
       const h = await createHarness()
       h.selfPathValues['mmsi'] = MMSI
@@ -502,13 +513,243 @@ describe('aisreporter AIS field encoding', () => {
       await wait(30)
       plugin.stop()
       await h.close()
-      // pushPositionInputs emits two frames: a leading-edge [U, sog, cog,
-      // head] and then the full [pos, sog, cog, head]. We want the latter.
       return h.received[h.received.length - 1]!.toString().trim()
     }
     const f1 = await frameFor(10, 20)
     const f2 = await frameFor(-30, 50)
     expect(f1).to.not.equal(f2)
+  })
+})
+
+describe('aisreporter #27 — ignores Null-Island and undefined positions', () => {
+  it('drops reports with position (0, 0) entirely', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h, {
+      position: { latitude: 0, longitude: 0 }
+    })
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.equal(0)
+  })
+
+  it('drops reports with near-zero position (GPS noise)', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h, {
+      position: { latitude: 1e-9, longitude: -1e-9 }
+    })
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.equal(0)
+  })
+
+  it('drops reports with undefined position', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    h.buses['navigation.speedOverGround']!.push(1)
+    h.buses['navigation.courseOverGroundTrue']!.push(0.5)
+    h.buses['navigation.headingTrue']!.push(0.7)
+    await wait(15)
+    h.buses['navigation.position']!.push(undefined)
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.equal(0)
+  })
+
+  it('still emits reports for valid positions just outside the Null-Island window', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h, {
+      position: { latitude: 0.01, longitude: 0.01 }
+    })
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.be.at.least(1)
+  })
+})
+
+describe('aisreporter #6 — gates static on recent dynamic', () => {
+  it('does not send any static report before the first dynamic arrives', async () => {
+    const h = await createHarness()
+    h.selfPathValues['name'] = 'Idle'
+    h.selfPathValues['communication.callsignVhf'] = 'IDLE'
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 999,
+      staticupdaterate: 0.01
+    })
+    // Deliberately do NOT push a position. Give the static-interval a
+    // generous window to fire repeatedly and confirm it stays silent.
+    await wait(60)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.equal(0)
+  })
+
+  it('fires static once the first dynamic arrives, then keeps rebroadcasting', async () => {
+    const h = await createHarness()
+    h.selfPathValues['name'] = 'Waking Up'
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 0.02
+    })
+    // Wait through a static-interval cycle with no dynamic → no frames.
+    await wait(30)
+    expect(h.received.length).to.equal(0)
+
+    // Push a position. Expect: position frame + initial static part 0 +
+    // at least one interval rebroadcast.
+    await pushPositionInputs(h)
+    await wait(80)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.be.at.least(3)
+  })
+})
+
+describe('aisreporter #32 — legacy config-key migration', () => {
+  it('reads the legacy lastpositonupdate key when the corrected one is absent', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999,
+      // Old, typo'd key. Expect the plugin to honour it.
+      lastpositonupdate: true,
+      lastpositonupdaterate: 0.015
+    })
+    await pushPositionInputs(h)
+    await wait(80)
+    plugin.stop()
+    await h.close()
+    // Original position + at least one last-known resend.
+    expect(h.received.length).to.be.at.least(2)
+  })
+
+  it('prefers the corrected key when both are set', async () => {
+    // Sanity: if the corrected key disables the resend, no resends fire
+    // even though the legacy key says to enable them.
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999,
+      lastpositionupdate: false,
+      lastpositonupdate: true,
+      lastpositionupdaterate: 0.015,
+      lastpositonupdaterate: 0.015
+    })
+    await pushPositionInputs(h)
+    await wait(50)
+    plugin.stop()
+    await h.close()
+    // Only the original position — no resend timer because
+    // lastpositionupdate: false wins.
+    expect(h.received.length).to.equal(1)
+  })
+
+  it('persists the migration via app.savePluginOptions when legacy keys are present', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 999,
+      staticupdaterate: 999,
+      lastpositonupdate: true,
+      lastpositonupdaterate: 180
+    })
+    plugin.stop()
+    await h.close()
+
+    expect(h.savedOptions.length).to.equal(1)
+    const persisted = h.savedOptions[0]!
+    expect(persisted.lastpositionupdate).to.equal(true)
+    expect(persisted.lastpositionupdaterate).to.equal(180)
+    // Legacy keys stripped from the persisted payload.
+    expect(persisted).to.not.have.property('lastpositonupdate')
+    expect(persisted).to.not.have.property('lastpositonupdaterate')
+  })
+
+  it('does not call savePluginOptions when only the corrected keys are present', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 999,
+      staticupdaterate: 999,
+      lastpositionupdate: true,
+      lastpositionupdaterate: 180
+    })
+    plugin.stop()
+    await h.close()
+    expect(h.savedOptions.length).to.equal(0)
+  })
+
+  it('does not crash when savePluginOptions is absent on older servers', async () => {
+    const h = await createHarness()
+    delete (h.app as any).savePluginOptions
+    const plugin = createPlugin(h.app)
+    expect(() =>
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 999,
+        staticupdaterate: 999,
+        lastpositonupdate: true
+      })
+    ).to.not.throw()
+    plugin.stop()
+    await h.close()
+  })
+
+  it('surfaces savePluginOptions callback errors through debug (does not throw)', async () => {
+    const debugMsgs: string[] = []
+    const h = await createHarness()
+    h.app.debug = (m: string) => debugMsgs.push(m)
+    h.app.savePluginOptions = (_opts: unknown, cb?: (err?: Error) => void) => {
+      if (cb) cb(new Error('disk full'))
+    }
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 999,
+      staticupdaterate: 999,
+      lastpositonupdate: true
+    })
+    plugin.stop()
+    await h.close()
+    expect(debugMsgs.some((m) => m.includes('migration save failed'))).to.equal(
+      true
+    )
   })
 })
 
@@ -521,7 +762,6 @@ describe('aisreporter initial + schema state', () => {
       updaterate: 999,
       staticupdaterate: 999
     })
-    // No push → no position / static frame → all three slots empty.
     const msg = plugin.statusMessage()
     plugin.stop()
     await h.close()
@@ -530,7 +770,7 @@ describe('aisreporter initial + schema state', () => {
     )
   })
 
-  it('schema declares the UDP-endpoint + rate properties with their documented defaults', () => {
+  it('schema advertises the corrected lastpositionupdate keys', () => {
     const plugin = createPlugin({
       getSelfPath: () => undefined,
       error: () => undefined,
@@ -557,50 +797,43 @@ describe('aisreporter initial + schema state', () => {
       title: 'Static Update Rate (s)',
       default: 360
     })
-    expect(schema.properties.lastpositonupdaterate).to.deep.include({
+    expect(schema.properties.lastpositionupdaterate).to.deep.include({
       type: 'number',
       default: 180
     })
-    expect(schema.properties.lastpositonupdate).to.deep.include({
+    expect(schema.properties.lastpositionupdate).to.deep.include({
       type: 'boolean',
       default: false
     })
+    // Typo'd keys are no longer advertised in the schema; they're still
+    // accepted at runtime via the migration path but the UI should only
+    // show the corrected names.
+    expect(schema.properties).to.not.have.property('lastpositonupdate')
+    expect(schema.properties).to.not.have.property('lastpositonupdaterate')
   })
 })
 
-describe('aisreporter lastpositonupdate timer lifecycle', () => {
+describe('aisreporter lastpositionupdate timer lifecycle', () => {
   it('clears a prior last-position timer when a fresh position arrives', async () => {
-    // Covers the `if (lastPositionTimeout) clearInterval(...)` branch in
-    // the onValue handler: push a first position → last-position timer
-    // starts → push a second position → first timer must be cleared
-    // before a new one is created. If the clear branch mutates to no-op,
-    // both timers run and we'd see roughly double the resends.
     const h = await createHarness()
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
       updaterate: 0.01,
       staticupdaterate: 999,
-      lastpositonupdate: true,
-      lastpositonupdaterate: 0.02
+      lastpositionupdate: true,
+      lastpositionupdaterate: 0.02
     })
     await pushPositionInputs(h, {
       position: { latitude: 10, longitude: 20 }
     })
-    await wait(25)
-    // Reset window to allow a second leading-edge emission with new position.
-    await wait(25)
+    await wait(50)
     await pushPositionInputs(h, {
       position: { latitude: 40, longitude: 50 }
     })
     await wait(60)
     plugin.stop()
     await h.close()
-    // We sent two distinct "real" positions and gave time for multiple
-    // last-known resends. If the clearInterval branch had no-op'd, the
-    // first timer would still be firing alongside the second — i.e. at
-    // least twice as many frames as a single-timer run.
-    // Instead, assert that statusMessage reflects the latest position.
     expect(plugin.statusMessage()).to.include('last known')
   })
 })
@@ -622,16 +855,12 @@ describe('aisreporter plugin falls through its defensive branches', () => {
   })
 
   it('uses console.error / console.log for error + debug when the app omits them', async () => {
-    // The error and debug no-ops are built when app.error / app.debug are
-    // missing. We don't want to actually hit the console during tests, so
-    // patch them while the plugin runs.
     const origErr = console.error
     const origLog = console.log
     console.error = () => undefined
     console.log = () => undefined
     try {
       const h = await createHarness()
-      // Drop app.error and app.debug to exercise the `||` fallbacks.
       delete (h.app as any).error
       delete (h.app as any).debug
       const plugin = createPlugin(h.app)
@@ -656,7 +885,6 @@ describe('aisreporter plugin falls through its defensive branches', () => {
       error: () => undefined,
       debug: () => undefined
     })
-    // No start — unsubscribe, timeout, lastPositionTimeout all undefined.
     expect(() => plugin.stop()).to.not.throw()
   })
 })
