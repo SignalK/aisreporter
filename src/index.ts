@@ -138,6 +138,12 @@ const createPlugin = function (app: any) {
         clearInterval(lastPositionTimeout)
         lastPositionTimeout = undefined
       }
+      // Without closing the UDP socket, the event loop stays alive after
+      // the plugin stops. Matters for tests (mocha won't exit) and for any
+      // host that may stop + restart the plugin many times.
+      if (udpSocket) {
+        udpSocket.close()
+      }
     },
 
     statusMessage: function () {

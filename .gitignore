@@ -37,3 +37,10 @@ jspm_packages
 .node_repl_history
 
 dist
+
+# Stryker mutation reports and scratch
+reports
+.stryker-tmp
+
+# Claude worktrees
+.claude
