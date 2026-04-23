@@ -47,6 +47,7 @@
       "src/**/*.ts"
     ],
     "exclude": [
+      "src/**/*.d.ts",
       "test/**",
       "coverage/**",
       "dist/**"
