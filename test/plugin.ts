@@ -59,8 +59,6 @@ async function createHarness(): Promise<Harness> {
     getSelfPath(key: string) {
       return selfPathValues[key]
     },
-    // Stub for the server-side config writer used by the #32 migration.
-    // Tests can inspect savedOptions to verify the migration was persisted.
     savePluginOptions(
       opts: Record<string, unknown>,
       cb?: (err?: Error) => void
@@ -140,10 +138,6 @@ describe('aisreporter start/stop lifecycle', () => {
     const posReport = payloads.find((p) => p.startsWith('!AIVDM'))
     expect(posReport, 'expected an AIVDM UDP frame').to.exist
   })
-
-  // #6 — static reports are now gated on seeing a dynamic reading first.
-  // Every static-test below pushes a position before asserting on the
-  // emitted frames.
 
   it('sends both static parts on first dynamic when the app has the full design profile', async () => {
     const h = await createHarness()
@@ -521,7 +515,7 @@ describe('aisreporter AIS field encoding', () => {
   })
 })
 
-describe('aisreporter #27 — ignores Null-Island and undefined positions', () => {
+describe('aisreporter — ignores Null-Island and undefined positions', () => {
   it('drops reports with position (0, 0) entirely', async () => {
     const h = await createHarness()
     const plugin = createPlugin(h.app)
@@ -593,7 +587,7 @@ describe('aisreporter #27 — ignores Null-Island and undefined positions', () =
   })
 })
 
-describe('aisreporter #6 — gates static on recent dynamic', () => {
+describe('aisreporter — gates static on recent dynamic', () => {
   it('does not send any static report before the first dynamic arrives', async () => {
     const h = await createHarness()
     h.selfPathValues['name'] = 'Idle'
@@ -635,7 +629,7 @@ describe('aisreporter #6 — gates static on recent dynamic', () => {
   })
 })
 
-describe('aisreporter #32 — legacy config-key migration', () => {
+describe('aisreporter — legacy config-key migration', () => {
   it('reads the legacy lastpositonupdate key when the corrected one is absent', async () => {
     const h = await createHarness()
     const plugin = createPlugin(h.app)

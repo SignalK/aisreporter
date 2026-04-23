@@ -30,11 +30,10 @@ interface CombinedTuple {
   nmea: string
 }
 
-// #27: some GPS / chartplotter sources emit (0, 0) as a sentinel when they
-// have no fix (e.g. while powering down). Reporting Null-Island positions
-// to aggregators pollutes their map, so treat a near-zero pair as "no
-// position" rather than a valid reading. Signal K has no explicit
-// validity flag for this.
+// Some GPS / chartplotter sources emit (0, 0) as a sentinel when they
+// have no fix (e.g. while powering down), and Signal K has no explicit
+// validity flag. Treat a near-zero pair as "no position" so aggregators
+// don't see the vessel parked at Null Island.
 function isNullIsland(position: Position | undefined): boolean {
   if (position === undefined) return false
   return (
@@ -42,20 +41,16 @@ function isNullIsland(position: Position | undefined): boolean {
   )
 }
 
-// #6 / #32 — maximum age of the last "dynamic" reading (position update)
-// before static reports stop firing. Twice the default static interval
-// is a pragmatic middle ground: a vessel actively reporting will easily
-// refresh within this, but an idle server without a GPS feed won't keep
+// Maximum age of the last dynamic (position) reading before static
+// reports stop firing. An idle server without a GPS feed must not keep
 // pinging aggregators with ghost static data.
 const STATIC_MAX_STALE_MS = 10 * 60 * 1000
 
-// #32 — the original plugin persisted these typo'd keys in its schema,
-// and existing SignalK users have them baked into their
-// `plugin-config-data/aisreporter.json`. We publish the corrected keys
-// now, read either spelling (new wins), and — on servers that support
-// app.savePluginOptions — rewrite the config in-place so the user's
-// persisted settings migrate to the corrected spelling without their
-// input.
+// Earlier schema versions persisted these typo'd keys, so existing
+// users have them baked into their `plugin-config-data/aisreporter.json`.
+// We publish the corrected keys, read either spelling (new wins), and —
+// on servers that support app.savePluginOptions — rewrite the config
+// in-place so persisted settings migrate without user input.
 const LEGACY_KEYS: Readonly<Record<string, string>> = {
   lastpositonupdate: 'lastpositionupdate',
   lastpositonupdaterate: 'lastpositionupdaterate'
@@ -79,9 +74,6 @@ const createPlugin = function (app: any) {
   const lastMessages: [string, string, string] = ['', '', '']
   let lastMsgNmea: string
   let lastPositionTimeout: NodeJS.Timeout | undefined
-  // #6 — tracks the most recent timestamp at which dynamic data arrived.
-  // `undefined` = nothing seen yet, which gates static reports off until
-  // the vessel actually has something to report.
   let lastDynamicAt: number | undefined
   let firstDynamicSeen = false
 
@@ -135,9 +127,6 @@ const createPlugin = function (app: any) {
           .changes()
           .debounceImmediate((cfg.updaterate || 60) * 1000)
           .onValue((combined: CombinedTuple) => {
-            // #27: drop reports where position is missing or Null-Island.
-            // Aggregators get no frame at all, which is better than a
-            // report parked at 0,0.
             if (
               combined.position === undefined ||
               isNullIsland(combined.position)
@@ -151,9 +140,8 @@ const createPlugin = function (app: any) {
             lastMsgNmea = combined.nmea
             lastDynamicAt = Date.now()
 
-            // #6: fire a static report the first time we see real
-            // dynamic data so a fresh vessel announces itself to
-            // aggregators immediately. Subsequent static reports fall
+            // Announce a fresh vessel to aggregators immediately on its
+            // first real dynamic reading; subsequent static reports fall
             // to the interval below.
             if (!firstDynamicSeen) {
               firstDynamicSeen = true
@@ -181,9 +169,6 @@ const createPlugin = function (app: any) {
         }
 
         const sendStaticReport = function () {
-          // #6: suppress static reports when no dynamic data has arrived
-          // (or hasn't arrived in a while). Keeps aggregators from
-          // seeing ghost vessels for servers with no GPS feed.
           if (
             lastDynamicAt === undefined ||
             Date.now() - lastDynamicAt > STATIC_MAX_STALE_MS
@@ -197,10 +182,6 @@ const createPlugin = function (app: any) {
           }
         }
 
-        // NOTE: no immediate sendStaticReport() here any more (fix for #6).
-        // Startup static is fired from the position handler once we see
-        // the first valid dynamic reading; the interval below carries on
-        // from there.
         timeout = setInterval(
           sendStaticReport,
           (cfg.staticupdaterate || 360) * 1000
@@ -378,13 +359,11 @@ const createPlugin = function (app: any) {
   }
 }
 
-// #32 — merge legacy typo'd keys into the corrected ones. New key always
-// wins if both are set; legacy keys are kept on the returned object so a
+// Merge legacy typo'd keys into the corrected ones. New key always wins
+// if both are set; legacy keys are kept on the returned object so a
 // failed persistent-migration doesn't break the running start() call.
-// When the server exposes app.savePluginOptions (most versions do), we
-// also persist the migration so the user's on-disk config gets rewritten
-// to the corrected spelling and the legacy form drops away naturally on
-// next restart.
+// When the server exposes app.savePluginOptions we also rewrite the
+// on-disk config so the legacy form drops away on next restart.
 function migrateLegacyKeys(
   props: Record<string, unknown>,
   app: any,
