@@ -59,7 +59,7 @@
     ]
   },
   "dependencies": {
-    "ggencoder": "^0.1.18"
+    "ggencoder": "^1.0.9"
   },
   "peerDependencies": {
     "baconjs": "^3.0.0"
