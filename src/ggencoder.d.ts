@@ -1,15 +1,15 @@
 declare module 'ggencoder' {
   export interface AisEncodeOptions {
-    mmsi: string,
-    aistype?: number,
-    repeat?: number,
-    part?: number,
-    sog?: number | undefined,
-    accuracy?: number,
-    lon?: number | undefined,
-    lat?: number | undefined,
-    cog?: number | undefined,
-    hdg?: number | undefined,
+    mmsi: string
+    aistype?: number
+    repeat?: number
+    part?: number
+    sog?: number | undefined
+    accuracy?: number
+    lon?: number | undefined
+    lat?: number | undefined
+    cog?: number | undefined
+    hdg?: number | undefined
     cargo?: string | undefined
     shipname?: string | undefined
   }
