@@ -214,6 +214,9 @@ const createPlugin = function (app: any) {
       // instance starts from a clean slate.
       lastDynamicAt = undefined
       firstDynamicSeen = false
+      lastMessages[0] = ''
+      lastMessages[1] = ''
+      lastMessages[2] = ''
     },
 
     statusMessage: function () {
@@ -376,6 +379,9 @@ function migrateLegacyKeys(
       merged[corrected] = merged[legacy]
       migrated = true
     }
+  }
+  if (!Array.isArray(merged.endpoints)) {
+    merged.endpoints = []
   }
   if (migrated && typeof app.savePluginOptions === 'function') {
     const toPersist = { ...merged }
