@@ -298,8 +298,9 @@ describe('aisreporter start/stop lifecycle', () => {
     expect(h2.received.length).to.be.at.least(1)
   })
 
-  it('restarts cleanly after stop() (subscriptions cleared, new start() works)', async () => {
+  it('restarts cleanly after stop() on the same instance: per-run state (firstDynamicSeen, lastMessages) is reset', async () => {
     const h = await createHarness()
+    h.selfPathValues['name'] = 'Reboot'
     const plugin = createPlugin(h.app)
     plugin.start({
       endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
@@ -308,24 +309,31 @@ describe('aisreporter start/stop lifecycle', () => {
     })
     await pushPositionInputs(h)
     await wait(30)
+    // First run: position + first-dynamic static part 0 = >= 2 frames.
+    const firstRunCount = h.received.length
+    expect(firstRunCount).to.be.at.least(2)
     plugin.stop()
-    const afterFirstStop = h.received.length
 
-    const h2 = await createHarness()
-    const plugin2 = createPlugin(h2.app)
-    plugin2.start({
-      endpoints: [{ ipaddress: '127.0.0.1', port: h2.port }],
+    // statusMessage slots cleared on stop().
+    expect(plugin.statusMessage()).to.equal(
+      'Last sent messages: position  Static part 0:  Static part 1: '
+    )
+    h.received.length = 0
+
+    // Second start() on the SAME instance. If firstDynamicSeen isn't
+    // reset, the first-dynamic static would be skipped on this run.
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
       updaterate: 0.01,
       staticupdaterate: 999
     })
-    await pushPositionInputs(h2)
+    await pushPositionInputs(h)
     await wait(30)
-    plugin2.stop()
+    plugin.stop()
     await h.close()
-    await h2.close()
 
-    expect(afterFirstStop).to.be.at.least(1)
-    expect(h2.received.length).to.be.at.least(1)
+    // Same >= 2 frames on the second run, proving firstDynamicSeen was reset.
+    expect(h.received.length).to.be.at.least(2)
   })
 
   it('statusMessage reflects last sent frames', async () => {
@@ -491,7 +499,7 @@ describe('aisreporter AIS field encoding', () => {
     expect(h.received.map((b) => b.toString().trim())).to.include(expected)
   })
 
-  it('different positions produce different NMEA frames (sensitivity)', async () => {
+  it('different positions each encode to the expected per-position NMEA frame', async () => {
     async function frameFor(lat: number, lon: number): Promise<string> {
       const h = await createHarness()
       h.selfPathValues['mmsi'] = MMSI
@@ -509,9 +517,55 @@ describe('aisreporter AIS field encoding', () => {
       await h.close()
       return h.received[h.received.length - 1]!.toString().trim()
     }
-    const f1 = await frameFor(10, 20)
-    const f2 = await frameFor(-30, 50)
-    expect(f1).to.not.equal(f2)
+    const expectedFor = (lat: number, lon: number): string =>
+      new AisEncode({
+        aistype: 18,
+        repeat: 0,
+        mmsi: MMSI,
+        sog: 5 * 1.9438444924574,
+        accuracy: 0,
+        lon,
+        lat,
+        cog: (0.5 * 180) / Math.PI,
+        hdg: (0.7 * 180) / Math.PI
+      }).nmea
+    expect(await frameFor(10, 20)).to.equal(expectedFor(10, 20))
+    expect(await frameFor(-30, 50)).to.equal(expectedFor(-30, 50))
+  })
+
+  it('encodes negative fromCenter (starboard-offset GPS) with correct dimC/dimD', async () => {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    h.selfPathValues['name'] = 'Starboard'
+    h.selfPathValues['design.length.value.overall'] = 10
+    h.selfPathValues['design.beam.value'] = 4
+    h.selfPathValues['sensors.gps.fromBow.value'] = 3
+    h.selfPathValues['sensors.gps.fromCenter.value'] = -1
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+
+    const expected: string = new AisEncode({
+      aistype: 24,
+      repeat: 0,
+      part: 1,
+      mmsi: MMSI,
+      dimA: '3',
+      // length - fromBow = 10 - 3 = 7
+      dimB: '7',
+      // beam / 2 + fromCenter = 2 + (-1) = 1
+      dimC: '1',
+      // beam / 2 - fromCenter = 2 - (-1) = 3
+      dimD: '3'
+    }).nmea
+    expect(h.received.map((b) => b.toString().trim())).to.include(expected)
   })
 })
 
@@ -808,27 +862,153 @@ describe('aisreporter initial + schema state', () => {
 })
 
 describe('aisreporter lastpositionupdate timer lifecycle', () => {
-  it('clears a prior last-position timer when a fresh position arrives', async () => {
-    const h = await createHarness()
-    const plugin = createPlugin(h.app)
-    plugin.start({
-      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 0.01,
-      staticupdaterate: 999,
-      lastpositionupdate: true,
-      lastpositionupdaterate: 0.02
-    })
-    await pushPositionInputs(h, {
-      position: { latitude: 10, longitude: 20 }
-    })
-    await wait(50)
-    await pushPositionInputs(h, {
-      position: { latitude: 40, longitude: 50 }
-    })
-    await wait(60)
-    plugin.stop()
-    await h.close()
-    expect(plugin.statusMessage()).to.include('last known')
+  it('clears the prior last-position timer before arming a new one on each fresh position', async () => {
+    // Spy on setInterval/clearInterval to prove the clearInterval on a
+    // prior timer id is actually invoked before the second setInterval.
+    const origSetInterval = global.setInterval
+    const origClearInterval = global.clearInterval
+    const armedIds: NodeJS.Timeout[] = []
+    const clearedIds: NodeJS.Timeout[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      const id = origSetInterval(fn, ms)
+      armedIds.push(id)
+      return id
+    }) as typeof global.setInterval
+    global.clearInterval = ((id: NodeJS.Timeout) => {
+      clearedIds.push(id)
+      return origClearInterval(id)
+    }) as typeof global.clearInterval
+
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: 999,
+        lastpositionupdate: true,
+        lastpositionupdaterate: 0.02
+      })
+      const armedBefore = armedIds.length
+      await pushPositionInputs(h, {
+        position: { latitude: 10, longitude: 20 }
+      })
+      await wait(30)
+      const firstLastPosTimer = armedIds[armedIds.length - 1]!
+      await pushPositionInputs(h, {
+        position: { latitude: 40, longitude: 50 }
+      })
+      await wait(30)
+      plugin.stop()
+      await h.close()
+
+      // Two setInterval calls for last-position (one per onValue), plus
+      // the static-interval armed at start. Confirm the first
+      // last-position timer id was cleared by the second onValue.
+      expect(armedIds.length).to.be.greaterThan(armedBefore + 1)
+      expect(clearedIds).to.include(firstLastPosTimer)
+    } finally {
+      global.setInterval = origSetInterval
+      global.clearInterval = origClearInterval
+    }
+  })
+})
+
+describe('aisreporter — STATIC_MAX_STALE_MS inactivity gate', () => {
+  it('stops rebroadcasting static reports once the last dynamic is older than 10 minutes', async () => {
+    const origNow = Date.now
+    try {
+      const t0 = origNow()
+      let clock = t0
+      // Freeze Date.now while the first dynamic is captured so
+      // lastDynamicAt lands on our controlled epoch.
+      Date.now = () => clock
+
+      const h = await createHarness()
+      h.selfPathValues['name'] = 'Stale'
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: 0.02,
+        lastpositionupdate: false
+      })
+      await pushPositionInputs(h)
+      await wait(30)
+      // Frames so far: position + first-dynamic static part 0 plus
+      // at least one interval rebroadcast.
+      const beforeStale = h.received.length
+      expect(beforeStale).to.be.at.least(2)
+
+      // Jump the clock past STATIC_MAX_STALE_MS (10 min). The static
+      // interval keeps ticking every 20 ms but the gate should refuse
+      // to send any further frame.
+      clock = t0 + 10 * 60 * 1000 + 1
+      // Drain any UDP packet that was already in flight at the moment
+      // the clock flipped — socket.send is async and the receiver may
+      // not have seen it yet.
+      await wait(40)
+      const frozen = h.received.length
+      // Second window: every interval tick here sees the stale clock
+      // and must bail. Frame count should not change.
+      await wait(80)
+      plugin.stop()
+      await h.close()
+
+      expect(h.received.length).to.equal(frozen)
+    } finally {
+      Date.now = origNow
+    }
+  })
+})
+
+describe('aisreporter — default rate fallbacks', () => {
+  it('applies staticupdaterate default of 360s when the prop is omitted', async () => {
+    const origSetInterval = global.setInterval
+    const delays: number[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      delays.push(ms)
+      return origSetInterval(fn, ms)
+    }) as typeof global.setInterval
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }]
+      })
+      plugin.stop()
+      await h.close()
+      // Static interval is the only one armed at start() time.
+      expect(delays).to.include(360 * 1000)
+    } finally {
+      global.setInterval = origSetInterval
+    }
+  })
+
+  it('applies lastpositionupdaterate default of 180s when the prop is omitted', async () => {
+    const origSetInterval = global.setInterval
+    const delays: number[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      delays.push(ms)
+      return origSetInterval(fn, ms)
+    }) as typeof global.setInterval
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: 999,
+        lastpositionupdate: true
+      })
+      await pushPositionInputs(h)
+      await wait(30)
+      plugin.stop()
+      await h.close()
+      expect(delays).to.include(180 * 1000)
+    } finally {
+      global.setInterval = origSetInterval
+    }
   })
 })
 
@@ -880,5 +1060,74 @@ describe('aisreporter plugin falls through its defensive branches', () => {
       debug: () => undefined
     })
     expect(() => plugin.stop()).to.not.throw()
+  })
+
+  it('start() with no endpoints key in props does not throw on subsequent position', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    // Deliberately omit `endpoints` — simulates a user saving config
+    // through the web UI without populating the endpoints array.
+    plugin.start({
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    // Pushing a position exercises the onValue handler that calls
+    // cfg.endpoints.forEach; also exercises sendStaticPart0/1 paths.
+    h.selfPathValues['name'] = 'NoEndpoints'
+    await pushPositionInputs(h)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    // Nothing was configured to receive, so nothing was sent.
+    expect(h.received.length).to.equal(0)
+  })
+
+  it('start() swallows errors thrown during subscription setup and leaves started=false', async () => {
+    const h = await createHarness()
+    const origErr = console.error
+    console.error = () => undefined
+    try {
+      // Replace getSelfStream so combineWith setup throws.
+      h.app.streambundle.getSelfStream = () => {
+        throw new Error('stream setup boom')
+      }
+      const plugin = createPlugin(h.app)
+      expect(() =>
+        plugin.start({
+          endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+          updaterate: 0.01,
+          staticupdaterate: 999
+        })
+      ).to.not.throw()
+      expect(plugin.started).to.equal(false)
+      plugin.stop()
+    } finally {
+      console.error = origErr
+      await h.close()
+    }
+  })
+
+  it('stop() clears the lastMessages status slots so a subsequent start() starts fresh', async () => {
+    const h = await createHarness()
+    h.selfPathValues['name'] = 'Clearable'
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(30)
+    // After a run, statusMessage has content in every slot.
+    expect(plugin.statusMessage()).to.not.equal(
+      'Last sent messages: position  Static part 0:  Static part 1: '
+    )
+    plugin.stop()
+    await h.close()
+    // After stop(), slots are blank again — no stale frames carried
+    // over into the next run.
+    expect(plugin.statusMessage()).to.equal(
+      'Last sent messages: position  Static part 0:  Static part 1: '
+    )
   })
 })
