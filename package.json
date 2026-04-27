@@ -65,6 +65,7 @@
     "baconjs": "^3.0.0"
   },
   "devDependencies": {
+    "@signalk/server-api": "^2.24.0",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/mocha-runner": "^9.6.1",
     "@types/chai": "^5.2.3",
