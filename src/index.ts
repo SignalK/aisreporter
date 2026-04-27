@@ -16,11 +16,7 @@
 import { combineWith } from 'baconjs'
 import { AisEncode } from 'ggencoder'
 import * as dgram from 'dgram'
-
-interface Position {
-  latitude: number
-  longitude: number
-}
+import type { Path, Plugin, Position, ServerAPI } from '@signalk/server-api'
 
 interface CombinedTuple {
   position: Position | undefined
@@ -56,7 +52,7 @@ const LEGACY_KEYS: Readonly<Record<string, string>> = {
   lastpositonupdaterate: 'lastpositionupdaterate'
 }
 
-const createPlugin = function (app: any) {
+const createPlugin = function (app: ServerAPI) {
   const error =
     app.error ||
     ((msg: string) => {
@@ -77,7 +73,7 @@ const createPlugin = function (app: any) {
   let lastDynamicAt: number | undefined
   let firstDynamicSeen = false
 
-  const plugin: Plugin = {
+  const plugin: Plugin & { started: boolean } = {
     start: function (props: any) {
       if (!app.getSelfPath) {
         error(
@@ -85,7 +81,7 @@ const createPlugin = function (app: any) {
         )
         return
       }
-      const mmsi: string = app.getSelfPath('mmsi')
+      const mmsi = app.getSelfPath('mmsi') as string | undefined
 
       if (!mmsi) {
         error('aisreporter: mmsi missing in settings')
@@ -115,12 +111,14 @@ const createPlugin = function (app: any) {
                 .nmea
             }
           },
-          [
-            'navigation.position',
-            'navigation.speedOverGround',
-            'navigation.courseOverGroundTrue',
-            'navigation.headingTrue'
-          ]
+          (
+            [
+              'navigation.position',
+              'navigation.speedOverGround',
+              'navigation.courseOverGroundTrue',
+              'navigation.headingTrue'
+            ] as Path[]
+          )
             .map(app.streambundle.getSelfStream, app.streambundle)
             .map((s: any) => s.toProperty(undefined))
         )
@@ -369,7 +367,7 @@ const createPlugin = function (app: any) {
 // on-disk config so the legacy form drops away on next restart.
 function migrateLegacyKeys(
   props: Record<string, unknown>,
-  app: any,
+  app: ServerAPI,
   debug: (msg: string) => void
 ): Record<string, any> {
   const merged: Record<string, any> = { ...props }
@@ -388,7 +386,7 @@ function migrateLegacyKeys(
     for (const legacy of Object.keys(LEGACY_KEYS)) {
       delete toPersist[legacy]
     }
-    app.savePluginOptions(toPersist, (err: Error | undefined) => {
+    app.savePluginOptions(toPersist, (err) => {
       if (err) {
         debug(
           `aisreporter: legacy-key migration save failed (ignored): ${err.message}`
@@ -417,17 +415,6 @@ interface StaticInfo {
   fromBow?: number
   fromCenter?: number
   [key: string]: unknown
-}
-
-interface Plugin {
-  start: (app: any) => void
-  started: boolean
-  stop: () => void
-  statusMessage: (msg?: string) => string
-  id: string
-  name: string
-  description: string
-  schema: any
 }
 
 function createPositionReportMessage(
