@@ -1,27 +1,26 @@
 /*
  * End-to-end tests for the aisreporter plugin.
  *
- * Each test wires the plugin against a stub Signal K app (Bacon buses +
- * getSelfPath map) and a real UDP socket bound to 127.0.0.1. Position
- * and static reports that the plugin emits are captured from the UDP
- * socket so the whole round-trip — stream combine → debounce → AIS
- * encode → UDP send — is exercised in each assertion.
+ * Each test wires the plugin against a stub Signal K app whose only
+ * surface is `getSelfPath`, plus a real UDP socket bound to 127.0.0.1.
+ * Position and static reports that the plugin emits are captured from
+ * the UDP socket so the whole round-trip — polling tick → AIS encode →
+ * UDP send — is exercised in each assertion.
  *
  * Rates are set to 10 ms in most tests so that `setInterval`-driven
- * behaviour (static rebroadcast, last-known-position resend) fires
- * within a mocha test tick without needing a fake-timers dep.
+ * behaviour (dynamic polling, static rebroadcast, last-known-position
+ * resend) fires within a mocha test tick without needing a fake-timers
+ * dep.
  */
 
 import { expect } from 'chai'
 import * as dgram from 'dgram'
-import * as Bacon from 'baconjs'
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const createPlugin = require('../src/index')
 
 interface Harness {
   app: any
-  buses: Record<string, Bacon.Bus<unknown>>
   selfPathValues: Record<string, unknown>
   savedOptions: Array<Record<string, unknown>>
   received: Buffer[]
@@ -45,17 +44,10 @@ async function createHarness(): Promise<Harness> {
     server.bind(0, '127.0.0.1')
   })
 
-  const buses: Record<string, Bacon.Bus<unknown>> = {}
   const selfPathValues: Record<string, unknown> = { mmsi: '123456789' }
   const savedOptions: Array<Record<string, unknown>> = []
 
   const app = {
-    streambundle: {
-      getSelfStream(key: string) {
-        if (!buses[key]) buses[key] = new Bacon.Bus<unknown>()
-        return buses[key]!
-      }
-    },
     getSelfPath(key: string) {
       return selfPathValues[key]
     },
@@ -72,7 +64,6 @@ async function createHarness(): Promise<Harness> {
 
   return {
     app,
-    buses,
     selfPathValues,
     savedOptions,
     received,
@@ -88,15 +79,12 @@ async function createHarness(): Promise<Harness> {
 // setTimeout promises inline.
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-// The plugin wraps each source stream in `.toProperty(undefined)` and
-// pipes the tuple through `debounceImmediate`, which only emits on the
-// LEADING edge of a silence window. A single synchronous batch of four
-// pushes only ever produces one emission — the one after the first
-// push, when the other three values are still `undefined`.
-//
-// Workaround: push sog/cog/head first, let the debounce close, then
-// push position. The leading-edge emission in the second window now
-// carries all four values.
+// Mirrors how signalk-server exposes a vessel path: getSelfPath traverses
+// `<key>.value` to reach the leaf scalar/object that the plugin consumes.
+function setNav(h: Harness, key: string, value: unknown): void {
+  h.selfPathValues[`${key}.value`] = value
+}
+
 async function pushPositionInputs(
   h: Harness,
   {
@@ -109,14 +97,12 @@ async function pushPositionInputs(
     sog: number | undefined
     cog: number | undefined
     head: number | undefined
-  }> = {},
-  debounceWindowMs = 15
+  }> = {}
 ) {
-  h.buses['navigation.speedOverGround']!.push(sog)
-  h.buses['navigation.courseOverGroundTrue']!.push(cog)
-  h.buses['navigation.headingTrue']!.push(head)
-  await wait(debounceWindowMs)
-  h.buses['navigation.position']!.push(position)
+  setNav(h, 'navigation.speedOverGround', sog)
+  setNav(h, 'navigation.courseOverGroundTrue', cog)
+  setNav(h, 'navigation.headingTrue', head)
+  setNav(h, 'navigation.position', position)
 }
 
 describe('aisreporter start/stop lifecycle', () => {
@@ -409,9 +395,9 @@ describe('aisreporter AIS field encoding', () => {
       updaterate: 0.01,
       staticupdaterate: 999
     })
-    // Push position only — leave sog / cog / head at their .toProperty
-    // seed of undefined. Bypasses pushPositionInputs's numeric defaults.
-    h.buses['navigation.position']!.push({ latitude: 10, longitude: 20 })
+    // Push position only — leave sog / cog / head undefined.
+    // Bypasses pushPositionInputs's numeric defaults.
+    setNav(h, 'navigation.position', { latitude: 10, longitude: 20 })
     await wait(30)
     plugin.stop()
     await h.close()
@@ -569,6 +555,75 @@ describe('aisreporter AIS field encoding', () => {
   })
 })
 
+describe('aisreporter — change detection (lat/lon dedup)', () => {
+  // The polling tick fires every updaterate ms but emits only when the
+  // current lat/lon differs from the last emitted pair. These tests pin
+  // each side of the && separately so a future loosening of the guard
+  // (e.g. && to ||, or one side hard-wired) is caught.
+
+  it('emits a second frame when only longitude changes', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999,
+      lastpositionupdate: false
+    })
+    await pushPositionInputs(h, { position: { latitude: 10, longitude: 20 } })
+    await wait(30)
+    await pushPositionInputs(h, { position: { latitude: 10, longitude: 21 } })
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    const positionFrames = h.received
+      .map((b) => b.toString().trim())
+      .filter((p) => p.startsWith('!AIVDM'))
+    expect(positionFrames.length).to.equal(2)
+  })
+
+  it('emits a second frame when only latitude changes', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999,
+      lastpositionupdate: false
+    })
+    await pushPositionInputs(h, { position: { latitude: 10, longitude: 20 } })
+    await wait(30)
+    await pushPositionInputs(h, { position: { latitude: 11, longitude: 20 } })
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    const positionFrames = h.received
+      .map((b) => b.toString().trim())
+      .filter((p) => p.startsWith('!AIVDM'))
+    expect(positionFrames.length).to.equal(2)
+  })
+
+  it('does not emit a second frame when lat and lon are identical', async () => {
+    const h = await createHarness()
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999,
+      lastpositionupdate: false
+    })
+    await pushPositionInputs(h, { position: { latitude: 10, longitude: 20 } })
+    // Let several polling ticks fire while data stays identical.
+    await wait(80)
+    plugin.stop()
+    await h.close()
+    const positionFrames = h.received
+      .map((b) => b.toString().trim())
+      .filter((p) => p.startsWith('!AIVDM'))
+    expect(positionFrames.length).to.equal(1)
+  })
+})
+
 describe('aisreporter — ignores Null-Island and undefined positions', () => {
   it('drops reports with position (0, 0) entirely', async () => {
     const h = await createHarness()
@@ -612,11 +667,11 @@ describe('aisreporter — ignores Null-Island and undefined positions', () => {
       updaterate: 0.01,
       staticupdaterate: 999
     })
-    h.buses['navigation.speedOverGround']!.push(1)
-    h.buses['navigation.courseOverGroundTrue']!.push(0.5)
-    h.buses['navigation.headingTrue']!.push(0.7)
+    setNav(h, 'navigation.speedOverGround', 1)
+    setNav(h, 'navigation.courseOverGroundTrue', 0.5)
+    setNav(h, 'navigation.headingTrue', 0.7)
     await wait(15)
-    h.buses['navigation.position']!.push(undefined)
+    setNav(h, 'navigation.position', undefined)
     await wait(40)
     plugin.stop()
     await h.close()
@@ -1012,6 +1067,198 @@ describe('aisreporter — default rate fallbacks', () => {
   })
 })
 
+describe('aisreporter — start() failure surfaces through statusMessage', () => {
+  it('statusMessage reports the misconfiguration when mmsi is missing', () => {
+    const plugin = createPlugin({
+      getSelfPath: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    })
+    plugin.start({})
+    expect(plugin.statusMessage()).to.include('mmsi missing')
+    expect(plugin.started).to.equal(false)
+  })
+
+  it('statusMessage reports the failure when getSelfPath is unavailable', () => {
+    const plugin = createPlugin({
+      error: () => undefined,
+      debug: () => undefined
+    })
+    plugin.start({})
+    expect(plugin.statusMessage()).to.include('app.getSelfPath')
+    expect(plugin.started).to.equal(false)
+  })
+
+  it('clears the start-error message after a successful restart', async () => {
+    const h = await createHarness()
+    delete h.selfPathValues['mmsi']
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }]
+    })
+    expect(plugin.statusMessage()).to.include('mmsi missing')
+
+    h.selfPathValues['mmsi'] = '123456789'
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    expect(plugin.statusMessage()).to.not.include('mmsi missing')
+  })
+})
+
+describe('aisreporter — endpoint sanitization', () => {
+  it('drops endpoints whose port is out of the 1..65535 range', async () => {
+    const h = await createHarness()
+    const errors: string[] = []
+    h.app.error = (m: string) => errors.push(m)
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [
+        { ipaddress: '127.0.0.1', port: h.port },
+        { ipaddress: '127.0.0.1', port: 0 },
+        { ipaddress: '127.0.0.1', port: 99999 },
+        { ipaddress: '127.0.0.1', port: -1 }
+      ],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    // Only the valid endpoint received the AIS frame.
+    expect(h.received.length).to.be.at.least(1)
+    // Three invalid ports each logged once at start time.
+    expect(
+      errors.filter((m) => m.includes('invalid port')).length
+    ).to.be.at.least(3)
+  })
+
+  it('drops endpoints with an invalid ipaddress (wrong type, empty, CR/LF)', async () => {
+    const h = await createHarness()
+    const errors: string[] = []
+    h.app.error = (m: string) => errors.push(m)
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [
+        { ipaddress: 12345, port: 12345 },
+        { ipaddress: '', port: 12345 },
+        { ipaddress: '127.0.0.1\r\n.evil', port: 12345 }
+      ],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.equal(0)
+    expect(
+      errors.filter((m) => m.includes('invalid ipaddress')).length
+    ).to.equal(3)
+  })
+
+  it('drops non-object endpoint entries', async () => {
+    const h = await createHarness()
+    const errors: string[] = []
+    h.app.error = (m: string) => errors.push(m)
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [null, 'oops', 42, { ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(40)
+    plugin.stop()
+    await h.close()
+    expect(h.received.length).to.be.at.least(1)
+    expect(errors.filter((m) => m.includes('not an object')).length).to.equal(3)
+  })
+})
+
+describe('aisreporter — rate sanitization', () => {
+  it('falls back to default when updaterate is NaN', async () => {
+    const origSetInterval = global.setInterval
+    const delays: number[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      delays.push(ms)
+      return origSetInterval(fn, ms)
+    }) as typeof global.setInterval
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: NaN,
+        staticupdaterate: 999
+      })
+      plugin.stop()
+      await h.close()
+      // Two intervals armed at start: dynamic (default 60s) and static (999s).
+      expect(delays).to.include(60 * 1000)
+    } finally {
+      global.setInterval = origSetInterval
+    }
+  })
+
+  it('falls back to default when staticupdaterate is negative', async () => {
+    const origSetInterval = global.setInterval
+    const delays: number[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      delays.push(ms)
+      return origSetInterval(fn, ms)
+    }) as typeof global.setInterval
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: -42
+      })
+      plugin.stop()
+      await h.close()
+      expect(delays).to.include(360 * 1000)
+    } finally {
+      global.setInterval = origSetInterval
+    }
+  })
+
+  it('falls back to default when lastpositionupdaterate is a string', async () => {
+    const origSetInterval = global.setInterval
+    const delays: number[] = []
+    global.setInterval = ((fn: () => void, ms: number) => {
+      delays.push(ms)
+      return origSetInterval(fn, ms)
+    }) as typeof global.setInterval
+    try {
+      const h = await createHarness()
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: 999,
+        lastpositionupdate: true,
+        lastpositionupdaterate: '180' as unknown as number
+      })
+      await pushPositionInputs(h)
+      await wait(30)
+      plugin.stop()
+      await h.close()
+      expect(delays).to.include(180 * 1000)
+    } finally {
+      global.setInterval = origSetInterval
+    }
+  })
+})
+
 describe('aisreporter plugin falls through its defensive branches', () => {
   it('uses console.error when app.error is missing and mmsi is absent', () => {
     const origErr = console.error
@@ -1082,29 +1329,27 @@ describe('aisreporter plugin falls through its defensive branches', () => {
     expect(h.received.length).to.equal(0)
   })
 
-  it('start() swallows errors thrown during subscription setup and leaves started=false', async () => {
+  it('logs the destination ip:port when a UDP send fails', async () => {
     const h = await createHarness()
-    const origErr = console.error
-    console.error = () => undefined
-    try {
-      // Replace getSelfStream so combineWith setup throws.
-      h.app.streambundle.getSelfStream = () => {
-        throw new Error('stream setup boom')
-      }
-      const plugin = createPlugin(h.app)
-      expect(() =>
-        plugin.start({
-          endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-          updaterate: 0.01,
-          staticupdaterate: 999
-        })
-      ).to.not.throw()
-      expect(plugin.started).to.equal(false)
-      plugin.stop()
-    } finally {
-      console.error = origErr
-      await h.close()
-    }
+    const errors: string[] = []
+    h.app.error = (m: string) => errors.push(m)
+    // '999.999.999.999' isn't a valid IPv4 literal so dgram.send falls
+    // back to a DNS lookup, which fails ENOTFOUND on the send callback.
+    // This exercises the error-formatting code path with a deterministic
+    // failure that doesn't depend on real network state.
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '999.999.999.999', port: 12345 }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(150)
+    plugin.stop()
+    await h.close()
+    expect(
+      errors.some((m) => m.includes('send to 999.999.999.999:12345 failed:'))
+    ).to.equal(true)
   })
 
   it('stop() clears the lastMessages status slots so a subsequent start() starts fresh', async () => {

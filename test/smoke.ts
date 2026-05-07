@@ -33,7 +33,7 @@ describe('aisreporter plugin factory', () => {
       error: (m: string) => errors.push(m)
     })
     plugin.start({})
-    expect(errors[0]).to.include('aisreporter needs app.getSelfPath')
+    expect(errors[0]).to.include('app.getSelfPath')
   })
 
   it('start() without an mmsi is a no-op (does not throw)', () => {
