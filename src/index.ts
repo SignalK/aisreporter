@@ -13,27 +13,21 @@
  * limitations under the License.
  */
 
-import { combineWith } from 'baconjs'
 import { AisEncode } from 'ggencoder'
 import * as dgram from 'dgram'
-import type { Path, Plugin, Position, ServerAPI } from '@signalk/server-api'
-
-interface CombinedTuple {
-  position: Position | undefined
-  sog: number | undefined
-  cog: number | undefined
-  head: number | undefined
-  nmea: string
-}
+import type { Plugin, Position, ServerAPI } from '@signalk/server-api'
 
 // Some GPS / chartplotter sources emit (0, 0) as a sentinel when they
 // have no fix (e.g. while powering down), and Signal K has no explicit
 // validity flag. Treat a near-zero pair as "no position" so aggregators
-// don't see the vessel parked at Null Island.
-function isNullIsland(position: Position | undefined): boolean {
-  if (position === undefined) return false
+// don't see the vessel parked at Null Island. 1e-6 degrees is ~11 cm
+// at the equator — anything below that is GPS-noise around zero, not a
+// real fix.
+const NULL_ISLAND_EPSILON_DEG = 1e-6
+function isNullIsland(position: Position): boolean {
   return (
-    Math.abs(position.latitude) < 1e-6 && Math.abs(position.longitude) < 1e-6
+    Math.abs(position.latitude) < NULL_ISLAND_EPSILON_DEG &&
+    Math.abs(position.longitude) < NULL_ISLAND_EPSILON_DEG
   )
 }
 
@@ -52,6 +46,61 @@ const LEGACY_KEYS: Readonly<Record<string, string>> = {
   lastpositonupdaterate: 'lastpositionupdaterate'
 }
 
+// Keep operator-typo configs (NaN, negatives, strings) from arming a
+// pathologically tight setInterval that hammers aggregators. A 0 from
+// the schema is treated as "use default" rather than "send constantly".
+function sanitizeRateSeconds(value: unknown, defaultSeconds: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return defaultSeconds
+  }
+  return value
+}
+
+// Drop endpoints whose ipaddress or port can't be safely passed to
+// dgram.send. The schema only types these loosely (string + number); a
+// hand-edited config file or future schema relaxation could let through
+// objects, empty strings, fractional ports, or values containing
+// CR/LF that would smear the log lines we emit alongside each send.
+function sanitizeEndpoints(
+  endpoints: unknown,
+  warn: (msg: string) => void
+): Endpoint[] {
+  if (!Array.isArray(endpoints)) return []
+  const result: Endpoint[] = []
+  for (const ep of endpoints) {
+    if (!ep || typeof ep !== 'object') {
+      warn(
+        `aisreporter: ignoring endpoint, not an object: ${JSON.stringify(ep)}`
+      )
+      continue
+    }
+    const candidate = ep as { ipaddress?: unknown; port?: unknown }
+    if (
+      typeof candidate.ipaddress !== 'string' ||
+      candidate.ipaddress.length === 0 ||
+      /[\r\n]/.test(candidate.ipaddress)
+    ) {
+      warn(
+        `aisreporter: ignoring endpoint with invalid ipaddress: ${JSON.stringify(candidate.ipaddress)}`
+      )
+      continue
+    }
+    if (
+      typeof candidate.port !== 'number' ||
+      !Number.isInteger(candidate.port) ||
+      candidate.port < 1 ||
+      candidate.port > 65535
+    ) {
+      warn(
+        `aisreporter: ignoring endpoint with invalid port: ${JSON.stringify(candidate.port)}`
+      )
+      continue
+    }
+    result.push({ ipaddress: candidate.ipaddress, port: candidate.port })
+  }
+  return result
+}
+
 const createPlugin = function (app: ServerAPI) {
   const error =
     app.error ||
@@ -64,149 +113,170 @@ const createPlugin = function (app: ServerAPI) {
       console.log(msg)
     })
 
-  let udpSocket: dgram.Socket
-  let unsubscribe: () => void
-  let timeout: NodeJS.Timeout | undefined
+  let udpSocket: dgram.Socket | undefined
+  let dynamicTimer: NodeJS.Timeout | undefined
+  let staticTimer: NodeJS.Timeout | undefined
+  let lastPositionTimer: NodeJS.Timeout | undefined
   const lastMessages: [string, string, string] = ['', '', '']
   let lastMsgNmea: string
-  let lastPositionTimeout: NodeJS.Timeout | undefined
   let lastDynamicAt: number | undefined
   let firstDynamicSeen = false
+  // Surfaces a misconfigured/disabled state through statusMessage() so
+  // the SignalK admin UI doesn't silently show "Last sent messages: ..."
+  // with empty slots while the plugin is in fact disabled because of a
+  // missing mmsi or an outdated server.
+  let lastStartError: string | undefined
 
   const plugin: Plugin & { started: boolean } = {
     start: function (props: any) {
+      lastStartError = undefined
       if (!app.getSelfPath) {
-        error(
-          'Please upgrade the server, aisreporter needs app.getSelfPath and will not start'
-        )
+        const msg =
+          'aisreporter not started: server too old (no app.getSelfPath)'
+        error(msg)
+        lastStartError = msg
+        plugin.started = false
         return
       }
       const mmsi = app.getSelfPath('mmsi') as string | undefined
 
       if (!mmsi) {
-        error('aisreporter: mmsi missing in settings')
+        const msg = 'aisreporter not started: mmsi missing in settings'
+        error(msg)
+        lastStartError = msg
+        plugin.started = false
         return
       }
 
       const cfg = migrateLegacyKeys(props, app, debug)
+      cfg.endpoints = sanitizeEndpoints(cfg.endpoints, error)
+      const updateRateSec = sanitizeRateSeconds(cfg.updaterate, 60)
+      const staticRateSec = sanitizeRateSeconds(cfg.staticupdaterate, 360)
+      const lastPositionRateSec = sanitizeRateSeconds(
+        cfg.lastpositionupdaterate,
+        180
+      )
 
-      try {
-        udpSocket = dgram.createSocket('udp4')
-        // `combineWith` type signature changed between baconjs 1.x and 3.x;
-        // the cast keeps us compatible across the dual-version matrix (Cerbo
-        // Venus OS still ships baconjs 1.x; upstream signalk-server is on 3.x).
-        unsubscribe = (combineWith as any)(
-          function (
-            position: Position | undefined,
-            sog: number | undefined,
-            cog: number | undefined,
-            head: number | undefined
-          ): CombinedTuple {
-            return {
-              position,
-              sog,
-              cog,
-              head,
-              nmea: createPositionReportMessage(mmsi, position, sog, cog, head)
-                .nmea
-            }
-          },
-          (
-            [
-              'navigation.position',
-              'navigation.speedOverGround',
-              'navigation.courseOverGroundTrue',
-              'navigation.headingTrue'
-            ] as Path[]
+      udpSocket = dgram.createSocket('udp4')
+      // Poll vessel state through the public ServerAPI rather than
+      // subscribing to streambundle Bacon streams. The stream-based
+      // path silently stalls on hosts that ship a different baconjs
+      // version than the plugin's transitive copy: combine-pipelines
+      // wire up without error but never emit. Polling sidesteps the
+      // dual-Bacon problem entirely and matches the plugin's actual
+      // semantics, which are timer-driven (one report per updaterate).
+      let lastEmittedLat: number | undefined
+      let lastEmittedLon: number | undefined
+      const tick = () => {
+        const position = app.getSelfPath('navigation.position.value') as
+          | Position
+          | undefined
+        if (position === undefined || isNullIsland(position)) return
+        // Skip when lat/lon haven't moved since the previous emission.
+        // Without this, a host whose tree is updated by deltas of the
+        // same value (anchored vessel, stuck GPS) would keep firing
+        // identical AIS frames at aggregators every tick.
+        if (
+          position.latitude === lastEmittedLat &&
+          position.longitude === lastEmittedLon
+        ) {
+          return
+        }
+        const sog = app.getSelfPath('navigation.speedOverGround.value') as
+          | number
+          | undefined
+        const cog = app.getSelfPath('navigation.courseOverGroundTrue.value') as
+          | number
+          | undefined
+        const head = app.getSelfPath('navigation.headingTrue.value') as
+          | number
+          | undefined
+
+        const nmea = createPositionReportMessage(
+          mmsi,
+          position,
+          sog,
+          cog,
+          head
+        ).nmea
+        lastMessages[0] = new Date().toISOString() + ':' + nmea
+        cfg.endpoints.forEach((endpoint: Endpoint) => {
+          sendReportMsg(nmea, endpoint.ipaddress, endpoint.port)
+        })
+        lastMsgNmea = nmea
+        lastDynamicAt = Date.now()
+        lastEmittedLat = position.latitude
+        lastEmittedLon = position.longitude
+
+        // Announce a fresh vessel to aggregators immediately on its
+        // first real dynamic reading; subsequent static reports fall
+        // to the interval below.
+        if (!firstDynamicSeen) {
+          firstDynamicSeen = true
+          sendStaticReport()
+        }
+
+        // Reset the staleness clock on every fresh dynamic — the
+        // last-known-position interval represents "time since last
+        // real position", not a fixed cadence, so it must restart
+        // whenever a new position arrives.
+        if (lastPositionTimer) {
+          clearInterval(lastPositionTimer)
+          lastPositionTimer = undefined
+        }
+        if (cfg.lastpositionupdate) {
+          lastPositionTimer = setInterval(
+            sendLastPositionReport,
+            lastPositionRateSec * 1000
           )
-            .map(app.streambundle.getSelfStream, app.streambundle)
-            .map((s: any) => s.toProperty(undefined))
-        )
-          .changes()
-          .debounceImmediate((cfg.updaterate || 60) * 1000)
-          .onValue((combined: CombinedTuple) => {
-            if (
-              combined.position === undefined ||
-              isNullIsland(combined.position)
-            ) {
-              return
-            }
-            lastMessages[0] = new Date().toISOString() + ':' + combined.nmea
-            cfg.endpoints.forEach((endpoint: Endpoint) => {
-              sendReportMsg(combined.nmea, endpoint.ipaddress, endpoint.port)
-            })
-            lastMsgNmea = combined.nmea
-            lastDynamicAt = Date.now()
-
-            // Announce a fresh vessel to aggregators immediately on its
-            // first real dynamic reading; subsequent static reports fall
-            // to the interval below.
-            if (!firstDynamicSeen) {
-              firstDynamicSeen = true
-              sendStaticReport()
-            }
-
-            if (lastPositionTimeout) {
-              clearInterval(lastPositionTimeout)
-              lastPositionTimeout = undefined
-            }
-            if (cfg.lastpositionupdate) {
-              lastPositionTimeout = setInterval(
-                sendLastPositionReport,
-                (cfg.lastpositionupdaterate || 180) * 1000
-              )
-            }
-          })
-
-        const sendLastPositionReport = function () {
-          lastMessages[0] =
-            'last known ' + new Date().toISOString() + ':' + lastMsgNmea
-          cfg.endpoints.forEach((endpoint: Endpoint) => {
-            sendReportMsg(lastMsgNmea, endpoint.ipaddress, endpoint.port)
-          })
         }
-
-        const sendStaticReport = function () {
-          if (
-            lastDynamicAt === undefined ||
-            Date.now() - lastDynamicAt > STATIC_MAX_STALE_MS
-          ) {
-            return
-          }
-          const info = getStaticInfo()
-          if (Object.keys(info).length) {
-            sendStaticPartZero(info, mmsi, cfg.endpoints)
-            sendStaticPartOne(info, mmsi, cfg.endpoints)
-          }
-        }
-
-        timeout = setInterval(
-          sendStaticReport,
-          (cfg.staticupdaterate || 360) * 1000
-        )
-      } catch (e) {
-        plugin.started = false
-        console.error(e)
       }
+      dynamicTimer = setInterval(tick, updateRateSec * 1000)
+
+      const sendLastPositionReport = function () {
+        lastMessages[0] =
+          'last known ' + new Date().toISOString() + ':' + lastMsgNmea
+        cfg.endpoints.forEach((endpoint: Endpoint) => {
+          sendReportMsg(lastMsgNmea, endpoint.ipaddress, endpoint.port)
+        })
+      }
+
+      const sendStaticReport = function () {
+        if (
+          lastDynamicAt === undefined ||
+          Date.now() - lastDynamicAt > STATIC_MAX_STALE_MS
+        ) {
+          return
+        }
+        const info = getStaticInfo()
+        if (Object.keys(info).length) {
+          sendStaticPartZero(info, mmsi, cfg.endpoints)
+          sendStaticPartOne(info, mmsi, cfg.endpoints)
+        }
+      }
+
+      staticTimer = setInterval(sendStaticReport, staticRateSec * 1000)
     },
 
     stop: function () {
-      if (unsubscribe) {
-        unsubscribe()
+      if (dynamicTimer) {
+        clearInterval(dynamicTimer)
+        dynamicTimer = undefined
       }
-      if (timeout) {
-        clearInterval(timeout)
-        timeout = undefined
+      if (staticTimer) {
+        clearInterval(staticTimer)
+        staticTimer = undefined
       }
-      if (lastPositionTimeout) {
-        clearInterval(lastPositionTimeout)
-        lastPositionTimeout = undefined
+      if (lastPositionTimer) {
+        clearInterval(lastPositionTimer)
+        lastPositionTimer = undefined
       }
       // Without closing the UDP socket, the event loop stays alive after
       // the plugin stops. Matters for tests (mocha won't exit) and for any
       // host that may stop + restart the plugin many times.
       if (udpSocket) {
         udpSocket.close()
+        udpSocket = undefined
       }
       // Reset per-run state so a subsequent start() on the same factory
       // instance starts from a clean slate.
@@ -215,9 +285,11 @@ const createPlugin = function (app: ServerAPI) {
       lastMessages[0] = ''
       lastMessages[1] = ''
       lastMessages[2] = ''
+      lastStartError = undefined
     },
 
     statusMessage: function () {
+      if (lastStartError !== undefined) return lastStartError
       return `Last sent messages: position ${lastMessages[0]} Static part 0: ${lastMessages[1]} Static part 1: ${lastMessages[2]}`
     },
     started: false,
@@ -280,7 +352,11 @@ const createPlugin = function (app: ServerAPI) {
     if (udpSocket) {
       udpSocket.send(msg + '\n', 0, msg.length + 1, port, ip, (err) => {
         if (err) {
-          error('Failed to send position report.' + err)
+          error(
+            `aisreporter: send to ${ip}:${port} failed: ${
+              (err as Error).message
+            }`
+          )
         }
       })
     }
@@ -419,7 +495,7 @@ interface StaticInfo {
 
 function createPositionReportMessage(
   mmsi: string,
-  position: Position | undefined,
+  position: Position,
   sog: number | undefined,
   cog: number | undefined,
   head: number | undefined
@@ -430,8 +506,8 @@ function createPositionReportMessage(
     mmsi: mmsi,
     sog: sog !== undefined ? mpsToKn(sog) : undefined,
     accuracy: 0, // 0 = regular GPS, 1 = DGPS
-    lon: position !== undefined ? position.longitude : undefined,
-    lat: position !== undefined ? position.latitude : undefined,
+    lon: position.longitude,
+    lat: position.latitude,
     cog: cog !== undefined ? radsToDeg(cog) : undefined,
     hdg: head !== undefined ? radsToDeg(head) : undefined
   })
