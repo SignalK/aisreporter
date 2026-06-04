@@ -20,9 +20,18 @@
   },
   "files": [
     "dist",
+    "logo.svg",
+    "docs/screenshots",
     "README.md",
     "LICENSE"
   ],
+  "signalk": {
+    "displayName": "AIS Reporter",
+    "appIcon": "./logo.svg",
+    "screenshots": [
+      "./docs/screenshots/1_config.png"
+    ]
+  },
   "engines": {
     "//": "Floor at 20.10 to support Venus CerboGX firmware (currently Node 20.18.2). Bump back to >=22 once Cerbo ships a newer Node.",
     "node": ">=20.10"
