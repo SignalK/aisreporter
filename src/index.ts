@@ -36,14 +36,35 @@ function isNullIsland(position: Position): boolean {
 // pinging aggregators with ghost static data.
 const STATIC_MAX_STALE_MS = 10 * 60 * 1000
 
-// AIS true-heading field (type 18/1/2/3): 9-bit integer degrees with 511
-// reserved for "heading not available". We must send 511 explicitly when
-// we have no heading. ggencoder otherwise substitutes COG for a missing
-// heading, which paints the vessel pointing along its course even when
-// the real heading differs (current set, leeway, sternway) — up to 180
-// degrees wrong. A Class B target with no heading sensor is expected to
-// report 511, not a faked course.
+// AIS "not available" sentinels for a type-18 report's dynamic fields.
+// When Signal K lacks a value the plugin must send the spec sentinel, not
+// leave it undefined: ggencoder then fills the field with a real-looking
+// zero (SOG 0 kn = "stopped", COG/heading 0° = "due north"), which lies to
+// aggregators. The values below are the decoded forms; ggencoder scales
+// them to the on-the-wire sentinels (SOG raw 1023, COG raw 3600).
+
+// SOG field: 10-bit, 0.1 kn units. Signal K speed is m/s; 102.3 kn → 1023.
+const AIS_SOG_NOT_AVAILABLE_KN = 102.3
+
+// COG field: 12-bit, 0.1 deg units. 360 deg → raw 3600.
+const AIS_COG_NOT_AVAILABLE_DEG = 360
+
+// True-heading field: 9-bit integer degrees with 511 reserved for "not
+// available". We must send 511 explicitly when we have no heading.
+// ggencoder otherwise substitutes COG for a missing heading, which paints
+// the vessel pointing along its course even when the real heading differs
+// (current set, leeway, sternway) — up to 180 degrees wrong. A Class B
+// target with no heading sensor is expected to report 511, not a faked
+// course.
 const AIS_HEADING_NOT_AVAILABLE = 511
+
+// Encoder workaround, NOT an AIS field value. ggencoder encodes heading via
+// `parseInt(hdg) || parseInt(cog)` and writes only the low 9 bits of the
+// field, so a 0-degree (due north) heading is falsy and gets replaced with
+// COG. The carry bit just above the 9-bit field (1 << 9 = 512) stays truthy
+// through that guard yet masks to a clean 0 on the wire, letting us send a
+// real due-north heading rather than lose it to COG.
+const AIS_HEADING_DUE_NORTH_CARRY = 1 << 9 // 512
 
 // Earlier schema versions persisted these typo'd keys, so existing
 // users have them baked into their `plugin-config-data/aisreporter.json`.
@@ -511,13 +532,29 @@ function createPositionReportMessage(
     aistype: 18, // class B position report
     repeat: 0,
     mmsi: mmsi,
-    sog: sog !== undefined ? mpsToKn(sog) : undefined,
+    sog: sogToAisField(sog),
     accuracy: 0, // 0 = regular GPS, 1 = DGPS
     lon: position.longitude,
     lat: position.latitude,
-    cog: cog !== undefined ? radsToDeg(cog) : undefined,
+    cog: cogToAisField(cog),
     hdg: headingToAisField(head)
   })
+}
+
+// Map Signal K speed (m/s) to the AIS SOG field in knots, or the
+// not-available sentinel when speed is unknown.
+function sogToAisField(sogMps: number | undefined): number {
+  if (sogMps === undefined) return AIS_SOG_NOT_AVAILABLE_KN
+  return mpsToKn(sogMps)
+}
+
+// Map a course over ground (radians) to the AIS COG field in degrees, or
+// the not-available sentinel when course is unknown.
+function cogToAisField(cogRad: number | undefined): number {
+  if (cogRad === undefined) return AIS_COG_NOT_AVAILABLE_DEG
+  // Normalize into [0, 360) so a course at/over one full turn can't collide
+  // with the 3600 "not available" sentinel.
+  return ((radsToDeg(cogRad) % 360) + 360) % 360
 }
 
 // Resolve a true heading (radians) for the AIS report:
@@ -555,16 +592,15 @@ function resolveTrueHeadingRad(app: ServerAPI): number | undefined {
 // Map a true heading (radians) to the AIS heading field: integer degrees
 // in [0, 360), or the 511 "not available" sentinel when no heading is
 // known. ggencoder truncates the value to an integer degree.
-//
-// Known limitation: a heading that truncates to exactly 0 (due north) is
-// re-substituted with COG inside ggencoder, whose `parseInt(hdg) ||
-// parseInt(cog)` treats 0 as falsy. That is a one-degree window we cannot
-// close without an upstream fix; everything else encodes faithfully.
 function headingToAisField(headingRad: number | undefined): number {
   if (headingRad === undefined) return AIS_HEADING_NOT_AVAILABLE
   // A derived magnetic + variation sum can fall outside one turn; normalize
   // (including negatives) back into [0, 360).
-  return ((radsToDeg(headingRad) % 360) + 360) % 360
+  const deg = ((radsToDeg(headingRad) % 360) + 360) % 360
+  // Route a due-north heading through the carry-bit form; see the constant
+  // for why ggencoder needs it.
+  if (Math.trunc(deg) === 0) return AIS_HEADING_DUE_NORTH_CARRY
+  return deg
 }
 
 function radsToDeg(radians: number): number {

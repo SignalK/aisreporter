@@ -386,7 +386,7 @@ describe('aisreporter AIS field encoding', () => {
     ).to.include(expected)
   })
 
-  it('still encodes position with sog / cog / hdg unset, sending hdg = 511 (not available)', async () => {
+  it('encodes position with sog / cog / hdg unset using the AIS not-available sentinels', async () => {
     const h = await createHarness()
     h.selfPathValues['mmsi'] = MMSI
     const plugin = createPlugin(h.app)
@@ -406,13 +406,13 @@ describe('aisreporter AIS field encoding', () => {
       aistype: 18,
       repeat: 0,
       mmsi: MMSI,
-      sog: undefined,
+      // Missing dynamics must carry the AIS "not available" sentinels, not
+      // faked zeros: SOG 102.3 kn → 1023, COG 360° → 3600, heading 511.
+      sog: 102.3,
       accuracy: 0,
       lon: 20,
       lat: 10,
-      cog: undefined,
-      // With no heading source the field must carry the AIS "not available"
-      // sentinel, not a faked heading.
+      cog: 360,
       hdg: 511
     }).nmea
 
@@ -694,16 +694,95 @@ describe('aisreporter heading resolution', () => {
     expect(decoded.hdg).to.equal(511)
   })
 
-  it('characterizes the ggencoder due-north limitation: a 0° heading falls back to COG', async () => {
-    // Documented gap in headingToAisField: ggencoder's
-    // `parseInt(hdg) || parseInt(cog)` treats a 0° heading as falsy and
-    // substitutes COG. This pins the current behavior so a future upstream
-    // fix surfaces as a visible test diff rather than a silent change.
+  it('encodes a due-north (0°) heading as 0, not COG', async () => {
+    // ggencoder's `parseInt(hdg) || parseInt(cog)` would drop a 0° heading
+    // and substitute COG (28 here). headingToAisField sends the carry-bit
+    // form (512) so the wire heading is a faithful 0.
     const decoded = new AisDecode(
       await emitFrame({ ...baseNav, 'navigation.headingTrue': 0 })
     )
-    const cogDeg = Math.trunc((0.5 * 180) / Math.PI) // 28
-    expect(decoded.hdg).to.equal(cogDeg)
+    expect(decoded.hdg).to.equal(0)
+  })
+
+  it('encodes a sub-1° heading (truncates toward north) as 0, not COG', async () => {
+    // 0.4° → ~0.00698 rad. ggencoder would parseInt-truncate to 0 and fall
+    // back to COG; the carry-bit form keeps it a faithful 0.
+    const decoded = new AisDecode(
+      await emitFrame({
+        ...baseNav,
+        'navigation.headingTrue': (0.4 * Math.PI) / 180
+      })
+    )
+    expect(decoded.hdg).to.equal(0)
+  })
+})
+
+describe('aisreporter not-available dynamics (SOG / COG)', () => {
+  // Missing speed / course must encode as the AIS "not available" sentinels,
+  // never a real-looking 0 that tells aggregators the vessel is stopped and
+  // heading due north.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { AisDecode } = require('ggencoder')
+  const MMSI = '123456789'
+
+  async function emitFrame(nav: Record<string, unknown>): Promise<string> {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    for (const [key, value] of Object.entries(nav)) setNav(h, key, value)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    return (
+      h.received
+        .map((b) => b.toString().trim())
+        .find((p) => p.startsWith('!AIVDM')) ?? ''
+    )
+  }
+
+  // Position + heading present so only SOG / COG are exercised per test.
+  const position = { latitude: 10, longitude: 20 }
+
+  it('sends SOG = 102.3 (not available) when speed is missing, not 0', async () => {
+    const decoded = new AisDecode(
+      await emitFrame({
+        'navigation.position': position,
+        'navigation.courseOverGroundTrue': 0.5,
+        'navigation.headingTrue': 0.7
+      })
+    )
+    expect(decoded.sog).to.equal(102.3)
+  })
+
+  it('sends COG = 360 (not available) when course is missing, not 0', async () => {
+    const decoded = new AisDecode(
+      await emitFrame({
+        'navigation.position': position,
+        'navigation.speedOverGround': 5,
+        'navigation.headingTrue': 0.7
+      })
+    )
+    expect(decoded.cog).to.equal(360)
+  })
+
+  it('encodes real SOG / COG normally when present (not the sentinels)', async () => {
+    // 5 m/s → 9.7 kn; 0.5 rad → 28.6°. Guards against the helpers ever
+    // returning the not-available value for real data.
+    const decoded = new AisDecode(
+      await emitFrame({
+        'navigation.position': position,
+        'navigation.speedOverGround': 5,
+        'navigation.courseOverGroundTrue': 0.5,
+        'navigation.headingTrue': 0.7
+      })
+    )
+    expect(decoded.sog).to.equal(9.7)
+    expect(decoded.cog).to.equal(28.6)
   })
 })
 
