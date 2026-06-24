@@ -386,7 +386,7 @@ describe('aisreporter AIS field encoding', () => {
     ).to.include(expected)
   })
 
-  it('still encodes position with sog / cog / hdg unset (only position is required)', async () => {
+  it('still encodes position with sog / cog / hdg unset, sending hdg = 511 (not available)', async () => {
     const h = await createHarness()
     h.selfPathValues['mmsi'] = MMSI
     const plugin = createPlugin(h.app)
@@ -411,7 +411,9 @@ describe('aisreporter AIS field encoding', () => {
       lon: 20,
       lat: 10,
       cog: undefined,
-      hdg: undefined
+      // With no heading source the field must carry the AIS "not available"
+      // sentinel, not a faked heading.
+      hdg: 511
     }).nmea
 
     const actual = h.received.map((b) => b.toString().trim())
@@ -552,6 +554,156 @@ describe('aisreporter AIS field encoding', () => {
       dimD: '3'
     }).nmea
     expect(h.received.map((b) => b.toString().trim())).to.include(expected)
+  })
+})
+
+describe('aisreporter heading resolution', () => {
+  // Regression cover for the "vessel outline 180 degrees wrong" report:
+  // when Signal K has no navigation.headingTrue, the plugin must not let
+  // a heading equal to COG be emitted. It should derive a true heading
+  // from magnetic + variation, or send the 511 "not available" sentinel.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { AisEncode, AisDecode } = require('ggencoder')
+  const MMSI = '123456789'
+
+  // Drive one polling tick with the given self-path values and return the
+  // first emitted class-B position frame.
+  async function emitFrame(nav: Record<string, unknown>): Promise<string> {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    for (const [key, value] of Object.entries(nav)) setNav(h, key, value)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+    return (
+      h.received
+        .map((b) => b.toString().trim())
+        .find((p) => p.startsWith('!AIVDM')) ?? ''
+    )
+  }
+
+  const baseNav = {
+    'navigation.position': { latitude: 10, longitude: 20 },
+    'navigation.speedOverGround': 5,
+    'navigation.courseOverGroundTrue': 0.5
+  }
+
+  it('sends hdg = 511 (not COG) when no heading source exists', async () => {
+    // Under the original bug a missing heading encoded as COG (28 here),
+    // so asserting the not-available sentinel pins the regression directly.
+    const decoded = new AisDecode(await emitFrame({ ...baseNav }))
+    expect(decoded.hdg).to.equal(511)
+  })
+
+  it('uses navigation.headingTrue when present, ignoring magnetic + variation', async () => {
+    const nmea = await emitFrame({
+      ...baseNav,
+      'navigation.headingTrue': 2.0,
+      'navigation.headingMagnetic': 1.0,
+      'navigation.magneticVariation': 0.1
+    })
+    const expected: string = new AisEncode({
+      aistype: 18,
+      repeat: 0,
+      mmsi: MMSI,
+      sog: 5 * 1.9438444924574,
+      accuracy: 0,
+      lon: 20,
+      lat: 10,
+      cog: (0.5 * 180) / Math.PI,
+      hdg: (2.0 * 180) / Math.PI
+    }).nmea
+    expect(nmea).to.equal(expected)
+  })
+
+  it('derives true heading from magnetic + east variation when headingTrue is absent', async () => {
+    const nmea = await emitFrame({
+      ...baseNav,
+      'navigation.headingMagnetic': 2.0,
+      'navigation.magneticVariation': 0.3
+    })
+    const expected: string = new AisEncode({
+      aistype: 18,
+      repeat: 0,
+      mmsi: MMSI,
+      sog: 5 * 1.9438444924574,
+      accuracy: 0,
+      lon: 20,
+      lat: 10,
+      cog: (0.5 * 180) / Math.PI,
+      // true = magnetic + variation (east positive)
+      hdg: ((2.0 + 0.3) * 180) / Math.PI
+    }).nmea
+    expect(nmea).to.equal(expected)
+  })
+
+  it('subtracts west (negative) variation when deriving true heading', async () => {
+    const nmea = await emitFrame({
+      ...baseNav,
+      'navigation.headingMagnetic': 2.0,
+      'navigation.magneticVariation': -0.3
+    })
+    const expected: string = new AisEncode({
+      aistype: 18,
+      repeat: 0,
+      mmsi: MMSI,
+      sog: 5 * 1.9438444924574,
+      accuracy: 0,
+      lon: 20,
+      lat: 10,
+      cog: (0.5 * 180) / Math.PI,
+      hdg: ((2.0 - 0.3) * 180) / Math.PI
+    }).nmea
+    expect(nmea).to.equal(expected)
+  })
+
+  it('normalizes a derived heading that exceeds one full turn into [0, 360)', async () => {
+    // 6.0 rad (≈344°) + 0.5 rad (≈29°) wraps past 360° to ≈12°.
+    const nmea = await emitFrame({
+      ...baseNav,
+      'navigation.headingMagnetic': 6.0,
+      'navigation.magneticVariation': 0.5
+    })
+    const expected: string = new AisEncode({
+      aistype: 18,
+      repeat: 0,
+      mmsi: MMSI,
+      sog: 5 * 1.9438444924574,
+      accuracy: 0,
+      lon: 20,
+      lat: 10,
+      cog: (0.5 * 180) / Math.PI,
+      hdg: (((((6.0 + 0.5) * 180) / Math.PI) % 360) + 360) % 360
+    }).nmea
+    expect(nmea).to.equal(expected)
+  })
+
+  it('sends hdg = 511 when only magnetic heading is known (no variation to true)', async () => {
+    const decoded = new AisDecode(
+      await emitFrame({
+        ...baseNav,
+        'navigation.headingMagnetic': 2.0
+      })
+    )
+    expect(decoded.hdg).to.equal(511)
+  })
+
+  it('characterizes the ggencoder due-north limitation: a 0° heading falls back to COG', async () => {
+    // Documented gap in headingToAisField: ggencoder's
+    // `parseInt(hdg) || parseInt(cog)` treats a 0° heading as falsy and
+    // substitutes COG. This pins the current behavior so a future upstream
+    // fix surfaces as a visible test diff rather than a silent change.
+    const decoded = new AisDecode(
+      await emitFrame({ ...baseNav, 'navigation.headingTrue': 0 })
+    )
+    const cogDeg = Math.trunc((0.5 * 180) / Math.PI) // 28
+    expect(decoded.hdg).to.equal(cogDeg)
   })
 })
 

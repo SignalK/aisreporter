@@ -36,6 +36,15 @@ function isNullIsland(position: Position): boolean {
 // pinging aggregators with ghost static data.
 const STATIC_MAX_STALE_MS = 10 * 60 * 1000
 
+// AIS true-heading field (type 18/1/2/3): 9-bit integer degrees with 511
+// reserved for "heading not available". We must send 511 explicitly when
+// we have no heading. ggencoder otherwise substitutes COG for a missing
+// heading, which paints the vessel pointing along its course even when
+// the real heading differs (current set, leeway, sternway) — up to 180
+// degrees wrong. A Class B target with no heading sensor is expected to
+// report 511, not a faked course.
+const AIS_HEADING_NOT_AVAILABLE = 511
+
 // Earlier schema versions persisted these typo'd keys, so existing
 // users have them baked into their `plugin-config-data/aisreporter.json`.
 // We publish the corrected keys, read either spelling (new wins), and —
@@ -188,9 +197,7 @@ const createPlugin = function (app: ServerAPI) {
         const cog = app.getSelfPath('navigation.courseOverGroundTrue.value') as
           | number
           | undefined
-        const head = app.getSelfPath('navigation.headingTrue.value') as
-          | number
-          | undefined
+        const head = resolveTrueHeadingRad(app)
 
         const nmea = createPositionReportMessage(
           mmsi,
@@ -509,8 +516,55 @@ function createPositionReportMessage(
     lon: position.longitude,
     lat: position.latitude,
     cog: cog !== undefined ? radsToDeg(cog) : undefined,
-    hdg: head !== undefined ? radsToDeg(head) : undefined
+    hdg: headingToAisField(head)
   })
+}
+
+// Resolve a true heading (radians) for the AIS report:
+//   1. navigation.headingTrue when present;
+//   2. else derive true from navigation.headingMagnetic + magneticVariation
+//      (a compass emitting NMEA HDG rather than HDT leaves Signal K with
+//      only a magnetic heading, so without this the plugin would report no
+//      heading at all);
+//   3. else undefined, signalling "no heading known".
+function resolveTrueHeadingRad(app: ServerAPI): number | undefined {
+  const headingTrue = app.getSelfPath('navigation.headingTrue.value') as
+    | number
+    | undefined
+  if (typeof headingTrue === 'number' && Number.isFinite(headingTrue)) {
+    return headingTrue
+  }
+  const headingMagnetic = app.getSelfPath(
+    'navigation.headingMagnetic.value'
+  ) as number | undefined
+  const variation = app.getSelfPath('navigation.magneticVariation.value') as
+    | number
+    | undefined
+  if (
+    typeof headingMagnetic === 'number' &&
+    Number.isFinite(headingMagnetic) &&
+    typeof variation === 'number' &&
+    Number.isFinite(variation)
+  ) {
+    // Signal K stores variation east-positive, so true = magnetic + variation.
+    return headingMagnetic + variation
+  }
+  return undefined
+}
+
+// Map a true heading (radians) to the AIS heading field: integer degrees
+// in [0, 360), or the 511 "not available" sentinel when no heading is
+// known. ggencoder truncates the value to an integer degree.
+//
+// Known limitation: a heading that truncates to exactly 0 (due north) is
+// re-substituted with COG inside ggencoder, whose `parseInt(hdg) ||
+// parseInt(cog)` treats 0 as falsy. That is a one-degree window we cannot
+// close without an upstream fix; everything else encodes faithfully.
+function headingToAisField(headingRad: number | undefined): number {
+  if (headingRad === undefined) return AIS_HEADING_NOT_AVAILABLE
+  // A derived magnetic + variation sum can fall outside one turn; normalize
+  // (including negatives) back into [0, 360).
+  return ((radsToDeg(headingRad) % 360) + 360) % 360
 }
 
 function radsToDeg(radians: number): number {
