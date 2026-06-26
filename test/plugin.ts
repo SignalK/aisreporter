@@ -695,9 +695,8 @@ describe('aisreporter heading resolution', () => {
   })
 
   it('encodes a due-north (0°) heading as 0, not COG', async () => {
-    // ggencoder's `parseInt(hdg) || parseInt(cog)` would drop a 0° heading
-    // and substitute COG (28 here). headingToAisField sends the carry-bit
-    // form (512) so the wire heading is a faithful 0.
+    // A 0° heading must encode as a faithful 0 (north), never fall through
+    // to COG (28 here).
     const decoded = new AisDecode(
       await emitFrame({ ...baseNav, 'navigation.headingTrue': 0 })
     )
@@ -705,8 +704,7 @@ describe('aisreporter heading resolution', () => {
   })
 
   it('encodes a sub-1° heading (truncates toward north) as 0, not COG', async () => {
-    // 0.4° → ~0.00698 rad. ggencoder would parseInt-truncate to 0 and fall
-    // back to COG; the carry-bit form keeps it a faithful 0.
+    // 0.4° → ~0.00698 rad, truncates to 0; must still be a faithful 0.
     const decoded = new AisDecode(
       await emitFrame({
         ...baseNav,

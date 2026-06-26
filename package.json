@@ -69,7 +69,7 @@
     ]
   },
   "dependencies": {
-    "ggencoder": "^1.0.9"
+    "ggencoder": "^1.0.10"
   },
   "devDependencies": {
     "@signalk/server-api": "^2.24.0",
