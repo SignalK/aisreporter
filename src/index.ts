@@ -189,8 +189,7 @@ const createPlugin = function (app: ServerAPI) {
       let lastEmittedLon: number | undefined
       const tick = () => {
         const position = app.getSelfPath('navigation.position.value') as
-          | Position
-          | undefined
+          Position | undefined
         if (position === undefined || isNullIsland(position)) return
         // Skip when lat/lon haven't moved since the previous emission.
         // Without this, a host whose tree is updated by deltas of the
@@ -203,11 +202,9 @@ const createPlugin = function (app: ServerAPI) {
           return
         }
         const sog = app.getSelfPath('navigation.speedOverGround.value') as
-          | number
-          | undefined
+          number | undefined
         const cog = app.getSelfPath('navigation.courseOverGroundTrue.value') as
-          | number
-          | undefined
+          number | undefined
         const head = resolveTrueHeadingRad(app)
 
         const nmea = createPositionReportMessage(
@@ -556,8 +553,7 @@ function cogToAisField(cogRad: number | undefined): number {
 //   3. else undefined, signalling "no heading known".
 function resolveTrueHeadingRad(app: ServerAPI): number | undefined {
   const headingTrue = app.getSelfPath('navigation.headingTrue.value') as
-    | number
-    | undefined
+    number | undefined
   if (typeof headingTrue === 'number' && Number.isFinite(headingTrue)) {
     return headingTrue
   }
@@ -565,8 +561,7 @@ function resolveTrueHeadingRad(app: ServerAPI): number | undefined {
     'navigation.headingMagnetic.value'
   ) as number | undefined
   const variation = app.getSelfPath('navigation.magneticVariation.value') as
-    | number
-    | undefined
+    number | undefined
   if (
     typeof headingMagnetic === 'number' &&
     Number.isFinite(headingMagnetic) &&
