@@ -487,6 +487,98 @@ describe('aisreporter AIS field encoding', () => {
     expect(h.received.map((b) => b.toString().trim())).to.include(expected)
   })
 
+  // Signal K server's staleness enforcement replaces a value that stopped
+  // updating with null. The plugin must read that as "unknown", the same as
+  // a path that was never set.
+  it('sends static part 1 without GPS offsets when they read as null (timed out)', async () => {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    h.selfPathValues['name'] = 'Dims'
+    h.selfPathValues['design.length.value.overall'] = 10
+    h.selfPathValues['design.beam.value'] = 4
+    h.selfPathValues['sensors.gps.fromBow.value'] = null
+    h.selfPathValues['sensors.gps.fromCenter.value'] = null
+    h.selfPathValues['design.aisShipType.value.id'] = 36
+    h.selfPathValues['communication.callsignVhf'] = 'CALL1'
+
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+
+    // Offsets fall back to 0, as when they were never set.
+    const expected: string = new AisEncode({
+      aistype: 24,
+      repeat: 0,
+      part: 1,
+      mmsi: MMSI,
+      cargo: 36,
+      callsign: 'CALL1',
+      dimA: '0',
+      dimB: '10',
+      dimC: '2',
+      dimD: '2'
+    }).nmea
+
+    expect(h.received.map((b) => b.toString().trim())).to.include(expected)
+  })
+
+  it('encodes timed-out (null) sog / cog as the AIS not-available sentinels', async () => {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    setNav(h, 'navigation.speedOverGround', null)
+    setNav(h, 'navigation.courseOverGroundTrue', null)
+    setNav(h, 'navigation.position', { latitude: 10, longitude: 20 })
+    await wait(30)
+    plugin.stop()
+    await h.close()
+
+    // A null must not be encoded as a faked 0 kn / 0 degrees.
+    const expected: string = new AisEncode({
+      aistype: 18,
+      repeat: 0,
+      mmsi: MMSI,
+      sog: 102.3,
+      accuracy: 0,
+      lon: 20,
+      lat: 10,
+      cog: 360,
+      hdg: 511
+    }).nmea
+
+    expect(h.received.map((b) => b.toString().trim())).to.include(expected)
+  })
+
+  it('sends nothing while position reads as null (timed out)', async () => {
+    const h = await createHarness()
+    h.selfPathValues['mmsi'] = MMSI
+    const plugin = createPlugin(h.app)
+    plugin.start({
+      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+      updaterate: 0.01,
+      staticupdaterate: 999
+    })
+    await pushPositionInputs(h, { position: undefined })
+    setNav(h, 'navigation.position', null)
+    await wait(30)
+    plugin.stop()
+    await h.close()
+
+    expect(h.received).to.have.lengthOf(0)
+  })
+
   it('different positions each encode to the expected per-position NMEA frame', async () => {
     async function frameFor(lat: number, lon: number): Promise<string> {
       const h = await createHarness()

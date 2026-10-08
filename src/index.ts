@@ -188,8 +188,7 @@ const createPlugin = function (app: ServerAPI) {
       let lastEmittedLat: number | undefined
       let lastEmittedLon: number | undefined
       const tick = () => {
-        const position = app.getSelfPath('navigation.position.value') as
-          Position | undefined
+        const position = selfValue<Position>(app, 'navigation.position.value')
         if (position === undefined || isNullIsland(position)) return
         // Skip when lat/lon haven't moved since the previous emission.
         // Without this, a host whose tree is updated by deltas of the
@@ -201,10 +200,11 @@ const createPlugin = function (app: ServerAPI) {
         ) {
           return
         }
-        const sog = app.getSelfPath('navigation.speedOverGround.value') as
-          number | undefined
-        const cog = app.getSelfPath('navigation.courseOverGroundTrue.value') as
-          number | undefined
+        const sog = selfValue<number>(app, 'navigation.speedOverGround.value')
+        const cog = selfValue<number>(
+          app,
+          'navigation.courseOverGroundTrue.value'
+        )
         const head = resolveTrueHeadingRad(app)
 
         const nmea = createPositionReportMessage(
@@ -434,7 +434,7 @@ const createPlugin = function (app: ServerAPI) {
   }
 
   function setKey(info: StaticInfo, dest_key: string, source_key: string) {
-    const val = app.getSelfPath(source_key)
+    const val = selfValue(app, source_key)
     if (val !== undefined) info[dest_key] = val
   }
 
@@ -506,6 +506,17 @@ interface StaticInfo {
   fromBow?: number
   fromCenter?: number
   [key: string]: unknown
+}
+
+// Read a self path, treating null as unknown. Signal K server's staleness
+// enforcement replaces a value that stopped updating with null, so null is
+// "no current value" here just like a path that was never set. Without this
+// a timed-out speed or course would be reported as 0 rather than as the AIS
+// not-available sentinel, and a timed-out dimension would crash
+// putDimensions.
+function selfValue<T = unknown>(app: ServerAPI, path: string): T | undefined {
+  const value = app.getSelfPath(path)
+  return value === null ? undefined : (value as T | undefined)
 }
 
 function createPositionReportMessage(
