@@ -603,13 +603,24 @@ function mpsToKn(mps: number): number {
   return 1.9438444924574 * mps
 }
 
+// A to D place the reported position on the hull: A to the bow, B to the
+// stern, C to port, D to starboard. Without both GPS offsets that position
+// is unknown, and A = C = 0 with B and D set says "reference point not
+// available, dimensions available" (IMO SN.1/Circ.227, 5.3).
 function putDimensions(
   enc_msg: { dimA?: string; dimB?: string; dimC?: string; dimD?: string },
   length: number | undefined = 0,
   beam: number | undefined = 0,
-  fromBow: number | undefined = 0,
-  fromCenter: number | undefined = 0
+  fromBow: number | undefined,
+  fromCenter: number | undefined
 ) {
+  if (fromBow === undefined || fromCenter === undefined) {
+    enc_msg.dimA = '0'
+    enc_msg.dimB = length.toFixed(0)
+    enc_msg.dimC = '0'
+    enc_msg.dimD = beam.toFixed(0)
+    return
+  }
   enc_msg.dimA = fromBow.toFixed(0)
   enc_msg.dimB = (length - fromBow).toFixed(0)
   enc_msg.dimC = (beam / 2 + fromCenter).toFixed(0)
