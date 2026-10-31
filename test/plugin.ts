@@ -487,47 +487,60 @@ describe('aisreporter AIS field encoding', () => {
     expect(h.received.map((b) => b.toString().trim())).to.include(expected)
   })
 
-  // Signal K server's staleness enforcement replaces a value that stopped
-  // updating with null. The plugin must read that as "unknown", the same as
-  // a path that was never set.
-  it('sends static part 1 without GPS offsets when they read as null (timed out)', async () => {
-    const h = await createHarness()
-    h.selfPathValues['mmsi'] = MMSI
-    h.selfPathValues['name'] = 'Dims'
-    h.selfPathValues['design.length.value.overall'] = 10
-    h.selfPathValues['design.beam.value'] = 4
-    h.selfPathValues['sensors.gps.fromBow.value'] = null
-    h.selfPathValues['sensors.gps.fromCenter.value'] = null
-    h.selfPathValues['design.aisShipType.value.id'] = 36
-    h.selfPathValues['communication.callsignVhf'] = 'CALL1'
+  // Without both GPS offsets the reference point is unknown, so A = C = 0
+  // and B and D carry the length and beam (IMO SN.1/Circ.227, 5.3). Signal K
+  // server's staleness enforcement replaces a value that stopped updating
+  // with null, which counts as unknown too.
+  const unknownOffsets: [
+    string,
+    number | null | undefined,
+    number | null | undefined
+  ][] = [
+    ['never set', undefined, undefined],
+    ['null (timed out)', null, null],
+    ['only partly set', 3, undefined]
+  ]
+  for (const [label, fromBow, fromCenter] of unknownOffsets) {
+    it(`sends static part 1 without a reference point when the GPS offsets are ${label}`, async () => {
+      const h = await createHarness()
+      h.selfPathValues['mmsi'] = MMSI
+      h.selfPathValues['name'] = 'Dims'
+      h.selfPathValues['design.length.value.overall'] = 10
+      h.selfPathValues['design.beam.value'] = 4
+      if (fromBow !== undefined)
+        h.selfPathValues['sensors.gps.fromBow.value'] = fromBow
+      if (fromCenter !== undefined)
+        h.selfPathValues['sensors.gps.fromCenter.value'] = fromCenter
+      h.selfPathValues['design.aisShipType.value.id'] = 36
+      h.selfPathValues['communication.callsignVhf'] = 'CALL1'
 
-    const plugin = createPlugin(h.app)
-    plugin.start({
-      endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
-      updaterate: 0.01,
-      staticupdaterate: 999
+      const plugin = createPlugin(h.app)
+      plugin.start({
+        endpoints: [{ ipaddress: '127.0.0.1', port: h.port }],
+        updaterate: 0.01,
+        staticupdaterate: 999
+      })
+      await pushPositionInputs(h)
+      await wait(30)
+      plugin.stop()
+      await h.close()
+
+      const expected: string = new AisEncode({
+        aistype: 24,
+        repeat: 0,
+        part: 1,
+        mmsi: MMSI,
+        cargo: 36,
+        callsign: 'CALL1',
+        dimA: '0',
+        dimB: '10',
+        dimC: '0',
+        dimD: '4'
+      }).nmea
+
+      expect(h.received.map((b) => b.toString().trim())).to.include(expected)
     })
-    await pushPositionInputs(h)
-    await wait(30)
-    plugin.stop()
-    await h.close()
-
-    // Offsets fall back to 0, as when they were never set.
-    const expected: string = new AisEncode({
-      aistype: 24,
-      repeat: 0,
-      part: 1,
-      mmsi: MMSI,
-      cargo: 36,
-      callsign: 'CALL1',
-      dimA: '0',
-      dimB: '10',
-      dimC: '2',
-      dimD: '2'
-    }).nmea
-
-    expect(h.received.map((b) => b.toString().trim())).to.include(expected)
-  })
+  }
 
   it('encodes timed-out (null) sog / cog as the AIS not-available sentinels', async () => {
     const h = await createHarness()
